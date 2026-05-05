@@ -1,0 +1,31 @@
+{
+  "activeProfile": "personal",
+  "profiles": {
+    "personal": {
+      "savedAt": "2026-05-05T12:08:09.884Z",
+      "auth": {
+        "google": {
+          "type": "oauth",
+          "refresh": "1//0EXAMPLE_REFRESH_TOKEN",
+          "access": "ya29.EXAMPLE_ACCESS_TOKEN",
+          "expires": 1777923377608,
+          "email": "alpha@example.com",
+          "projectId": "example-project-123"
+        }
+      }
+    },
+    "backup": {
+      "savedAt": "2026-05-05T12:08:31.905Z",
+      "auth": {
+        "google": {
+          "type": "oauth",
+          "refresh": "1//0EXAMPLE_BACKUP_REFRESH_TOKEN",
+          "access": "ya29.EXAMPLE_BACKUP_ACCESS_TOKEN",
+          "expires": 1777929999999,
+          "email": "beta@example.com",
+          "projectId": "example-project-456"
+        }
+      }
+    }
+  }
+}

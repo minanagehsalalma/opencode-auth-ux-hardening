@@ -1,0 +1,46 @@
+{
+  "version": 4,
+  "accounts": [
+    {
+      "email": "alpha@example.com",
+      "refreshToken": "1//0EXAMPLE_REFRESH_TOKEN",
+      "enabled": true,
+      "cachedQuota": {
+        "gemini-flash": {
+          "remainingFraction": 0.8,
+          "resetTime": "2026-05-05T17:36:56Z",
+          "modelCount": 7
+        },
+        "gemini-pro": {
+          "remainingFraction": 0.2,
+          "resetTime": "2026-05-06T13:22:24Z",
+          "modelCount": 2
+        },
+        "claude": {
+          "remainingFraction": 0.0,
+          "resetTime": "2026-05-06T13:21:17Z",
+          "modelCount": 2
+        }
+      },
+      "projectId": "example-project-123"
+    },
+    {
+      "email": "beta@example.com",
+      "refreshToken": "1//0EXAMPLE_SECOND_REFRESH_TOKEN",
+      "enabled": true,
+      "cachedQuota": {
+        "gemini-flash": {
+          "remainingFraction": 0.4,
+          "resetTime": "2026-05-05T18:10:00Z",
+          "modelCount": 7
+        }
+      },
+      "projectId": "example-project-456"
+    }
+  ],
+  "activeIndex": 0,
+  "activeIndexByFamily": {
+    "gemini": 0,
+    "claude": 1
+  }
+}

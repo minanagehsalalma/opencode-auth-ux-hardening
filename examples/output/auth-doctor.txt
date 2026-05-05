@@ -1,0 +1,13 @@
+Auth Doctor
+
+[OK] auth.json loaded for alpha@example.com
+[OK] 2 saved profiles
+[OK] 2 Antigravity accounts
+[OK] Gemini active account: alpha@example.com
+[OK] auth.json projectId: example-project-123
+[WARN] Access token expired 2h 14m ago
+[WARN] 1 running Opencode process
+
+recommended:
+  - Use `opencode auth switch --restart` after changing accounts.
+  - Refresh via login flow if commands start failing.

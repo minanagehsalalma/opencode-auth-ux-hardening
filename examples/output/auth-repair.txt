@@ -1,0 +1,5 @@
+Auth Repair
+
+- synced Antigravity Gemini active account to alpha@example.com
+- backfilled auth.json projectId to example-project-123
+- set active profile to personal

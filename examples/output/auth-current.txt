@@ -1,0 +1,16 @@
+Auth Current
+
+profile: personal
+auth.json: alpha@example.com
+antigravity gemini: alpha@example.com
+antigravity claude: beta@example.com
+saved profiles: 2
+running opencode processes: 1
+recent sessions: 5
+projectId: example-project-123
+quota: flash 80%, pro 20%, claude 0%
+
+drift:
+  [WARN] Access token expired 2h 14m ago, but a refresh token exists.
+
+note: live Opencode sessions may need restart to pick up account changes.
