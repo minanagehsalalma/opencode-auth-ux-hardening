@@ -1,8 +1,8 @@
 # Opencode Auth UX Hardening
 
-Sanitized documentation and reference material for a multi-store auth UX cleanup around `opencode` plus the `opencode-antigravity-auth` plugin.
+Sanitized documentation, patch artifacts, and an installer for a multi-store auth UX cleanup around `opencode` plus the `opencode-antigravity-auth` plugin.
 
-This repo documents the exact improvements that were implemented locally to make account switching, drift detection, diagnostics, and runtime behavior much smoother.
+This repo includes the exact improvements that were implemented locally to make account switching, drift detection, diagnostics, and runtime behavior much smoother, plus a reusable patch flow for `opencode-ai@1.14.31`.
 
 ## Problem
 
@@ -38,6 +38,36 @@ opencode auth repair
 opencode auth switch personal --restart
 ```
 
+## Apply The Patch
+
+Supported baseline:
+
+- `opencode-ai@1.14.31`
+
+Apply it to the detected global install:
+
+```powershell
+node scripts/apply-opencode-auth-ux-patch.mjs
+```
+
+Apply it to an explicit package root:
+
+```powershell
+node scripts/apply-opencode-auth-ux-patch.mjs --target "C:\Users\you\AppData\Roaming\npm\node_modules\opencode-ai"
+```
+
+Restore the original launcher:
+
+```powershell
+node scripts/apply-opencode-auth-ux-patch.mjs --restore
+```
+
+Review the exact delta before applying:
+
+- [patches/opencode-ai-1.14.31-auth-ux.patch](patches/opencode-ai-1.14.31-auth-ux.patch)
+- [vendor/upstream/opencode-ai/1.14.31/bin/opencode](vendor/upstream/opencode-ai/1.14.31/bin/opencode)
+- [artifacts/opencode-ai/1.14.31/bin/opencode](artifacts/opencode-ai/1.14.31/bin/opencode)
+
 Example `auth current` output:
 
 ```text
@@ -61,6 +91,11 @@ note: live Opencode sessions may need restart to pick up account changes.
 
 ## Repo Layout
 
+- [scripts/apply-opencode-auth-ux-patch.mjs](scripts/apply-opencode-auth-ux-patch.mjs): applies or restores the patched launcher
+- [patches/opencode-ai-1.14.31-auth-ux.patch](patches/opencode-ai-1.14.31-auth-ux.patch): unified diff from upstream `1.14.31` to the patched launcher
+- [vendor/upstream/opencode-ai/1.14.31/bin/opencode](vendor/upstream/opencode-ai/1.14.31/bin/opencode): clean launcher from the npm tarball
+- [artifacts/opencode-ai/1.14.31/bin/opencode](artifacts/opencode-ai/1.14.31/bin/opencode): patched launcher ready to install
+- [docs/APPLY.md](docs/APPLY.md): apply, inspect, and restore instructions
 - [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md): exact example for each improvement and what it is for
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): store layout, runtime flow, and switching model
 - [docs/RESEARCH.md](docs/RESEARCH.md): external patterns used as a quality check
@@ -75,6 +110,7 @@ Everything in this repo is redacted:
 - project IDs are synthetic
 - tokens are fake
 - local paths use `<HOME>` or placeholder Windows paths
+- the published patch replaces the one machine-specific Python fallback with generic Python discovery
 
 See [docs/PRIVACY.md](docs/PRIVACY.md).
 

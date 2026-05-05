@@ -1,0 +1,1798 @@
+diff --git a/vendor/upstream/opencode-ai/1.14.31/bin/opencode b/artifacts/opencode-ai/1.14.31/bin/opencode
+index a7674ce..04facd7 100644
+--- a/vendor/upstream/opencode-ai/1.14.31/bin/opencode
++++ b/artifacts/opencode-ai/1.14.31/bin/opencode
+@@ -5,6 +5,1699 @@ const fs = require("fs")
+ const path = require("path")
+ const os = require("os")
+ 
++const INTERACTIVE_SWITCH = "__INTERACTIVE_SWITCH__"
++const DEFAULT_FAMILY = "gemini"
++const RESTART_DELAY_MS = 600
++const PYTHON_CANDIDATES = process.platform === "win32"
++  ? [
++      process.env.OPENCODE_AUTH_PYTHON || "",
++      path.join(os.homedir(), "AppData", "Local", "Programs", "Python", "Python313", "python.exe"),
++      path.join(os.homedir(), "AppData", "Local", "Programs", "Python", "Python312", "python.exe"),
++      "py",
++      "python",
++      "python3",
++    ]
++  : [
++      process.env.OPENCODE_AUTH_PYTHON || "",
++      "python3",
++      "python",
++    ]
++
++let cachedPythonLauncher
++
++function isAuthRoot(value) {
++  return value === "auth" || value === "providers"
++}
++
++function isAuthListCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && (args[1] === "list" || args[1] === "ls")
++}
++
++function isAuthSaveCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && args[1] === "save"
++}
++
++function isAuthSwitchCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && args[1] === "switch"
++}
++
++function isAuthProfilesCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && args[1] === "profiles"
++}
++
++function isAuthCurrentCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && ["current", "status", "whoami"].includes(args[1])
++}
++
++function isAuthDoctorCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && args[1] === "doctor"
++}
++
++function isAuthRepairCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && args[1] === "repair"
++}
++
++function isAuthRenameCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && args[1] === "rename"
++}
++
++function isAuthDeleteCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && ["delete", "remove", "rm"].includes(args[1])
++}
++
++function isAuthCloneCommand(args) {
++  return args.length >= 2 && isAuthRoot(args[0]) && args[1] === "clone"
++}
++
++function isAuthRootHelpRequest(args) {
++  return isAuthRoot(args[0]) && (args.length === 1 || (args.length === 2 && ["-h", "--help"].includes(args[1])))
++}
++
++function getOpencodeHome() {
++  return path.join(os.homedir(), ".local", "share", "opencode")
++}
++
++function getAuthPath() {
++  return path.join(getOpencodeHome(), "auth.json")
++}
++
++function getProfilesPath() {
++  return path.join(getOpencodeHome(), "auth.profiles.json")
++}
++
++function getAntigravityAccountsPath() {
++  return path.join(os.homedir(), ".config", "opencode", "antigravity-accounts.json")
++}
++
++function getAntigravityConfigPath() {
++  return path.join(os.homedir(), ".config", "opencode", "antigravity.json")
++}
++
++function getOpencodeDbPath() {
++  return path.join(getOpencodeHome(), "opencode.db")
++}
++
++function getPythonLaunchers() {
++  const unique = []
++  for (const candidate of PYTHON_CANDIDATES) {
++    if (!candidate) continue
++    if (!unique.includes(candidate)) unique.push(candidate)
++  }
++  return unique.map((candidate) => {
++    if (candidate === "py") {
++      return {
++        command: candidate,
++        args: ["-3"],
++      }
++    }
++    return {
++      command: candidate,
++      args: [],
++    }
++  })
++}
++
++function canRunPythonLauncher(launcher) {
++  if (launcher.command.includes(path.sep) && !fs.existsSync(launcher.command)) {
++    return false
++  }
++  const result = childProcess.spawnSync(launcher.command, [...launcher.args, "-c", "import sqlite3"], {
++    encoding: "utf8",
++    windowsHide: true,
++  })
++  return !result.error && result.status === 0
++}
++
++function getAvailablePythonLauncher() {
++  if (typeof cachedPythonLauncher !== "undefined") {
++    return cachedPythonLauncher
++  }
++  for (const launcher of getPythonLaunchers()) {
++    if (canRunPythonLauncher(launcher)) {
++      cachedPythonLauncher = launcher
++      return cachedPythonLauncher
++    }
++  }
++  cachedPythonLauncher = null
++  return cachedPythonLauncher
++}
++
++function parseFlagValue(args, index, name) {
++  const value = args[index + 1]
++  if (!value || value.startsWith("-")) {
++    console.error(`Missing value for ${name}`)
++    process.exit(1)
++  }
++  return value
++}
++
++function parseNamedValueArg(args, index, name) {
++  const arg = args[index]
++  if (arg === name) {
++    return {
++      value: parseFlagValue(args, index, name),
++      consumed: 2,
++    }
++  }
++  if (arg.startsWith(`${name}=`)) {
++    return {
++      value: arg.slice(name.length + 1),
++      consumed: 1,
++    }
++  }
++  return null
++}
++
++function normalizeSwitchValue(value) {
++  if (!value || value === "interactive") return INTERACTIVE_SWITCH
++  return value
++}
++
++function normalizeFamily(value) {
++  if (!value) return DEFAULT_FAMILY
++  const normalized = String(value).trim().toLowerCase()
++  if (!["gemini", "claude"].includes(normalized)) {
++    console.error(`Unsupported family: ${value}`)
++    process.exit(1)
++  }
++  return normalized
++}
++
++function ensureDirectory(dirPath) {
++  fs.mkdirSync(dirPath, { recursive: true })
++}
++
++function deepClone(value) {
++  return JSON.parse(JSON.stringify(value))
++}
++
++function readJsonFile(filePath, fallback) {
++  if (!fs.existsSync(filePath)) {
++    if (typeof fallback !== "undefined") return deepClone(fallback)
++    console.error(`File not found: ${filePath}`)
++    process.exit(1)
++  }
++
++  try {
++    return JSON.parse(fs.readFileSync(filePath, "utf8"))
++  } catch (error) {
++    console.error(`Failed to parse JSON file: ${filePath}`)
++    console.error(error instanceof Error ? error.message : String(error))
++    process.exit(1)
++  }
++}
++
++function writeJsonFile(filePath, value) {
++  ensureDirectory(path.dirname(filePath))
++  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`
++  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8")
++  fs.rmSync(filePath, { force: true })
++  fs.renameSync(tempPath, filePath)
++}
++
++function getAuthData() {
++  const authPath = getAuthPath()
++  if (!fs.existsSync(authPath)) {
++    console.error(`Credentials file not found: ${authPath}`)
++    process.exit(1)
++  }
++  return readJsonFile(authPath)
++}
++
++function writeAuthData(value) {
++  writeJsonFile(getAuthPath(), value)
++}
++
++function getEmptyProfilesStore() {
++  return {
++    activeProfile: null,
++    profiles: {},
++  }
++}
++
++function getProfilesStore() {
++  const store = readJsonFile(getProfilesPath(), getEmptyProfilesStore())
++  if (!store || typeof store !== "object") return getEmptyProfilesStore()
++  if (!store.profiles || typeof store.profiles !== "object") {
++    store.profiles = {}
++  }
++  if (!Object.prototype.hasOwnProperty.call(store, "activeProfile")) {
++    store.activeProfile = null
++  }
++  return store
++}
++
++function writeProfilesStore(store) {
++  writeJsonFile(getProfilesPath(), store)
++}
++
++function getAntigravityAccountsStore() {
++  const filePath = getAntigravityAccountsPath()
++  if (!fs.existsSync(filePath)) {
++    return null
++  }
++  const store = readJsonFile(filePath)
++  if (!store || typeof store !== "object" || !Array.isArray(store.accounts)) {
++    return null
++  }
++  if (!store.activeIndexByFamily || typeof store.activeIndexByFamily !== "object") {
++    store.activeIndexByFamily = {}
++  }
++  return store
++}
++
++function writeAntigravityAccountsStore(store) {
++  writeJsonFile(getAntigravityAccountsPath(), store)
++}
++
++function getAntigravityConfig() {
++  const filePath = getAntigravityConfigPath()
++  if (!fs.existsSync(filePath)) {
++    return null
++  }
++  return readJsonFile(filePath)
++}
++
++function isSecretField(key) {
++  const normalized = String(key).toLowerCase()
++  return normalized.includes("token") || normalized.includes("secret") || normalized.includes("key") || normalized === "access" || normalized === "refresh"
++}
++
++function redactSecret(value) {
++  const text = String(value)
++  if (!text) return "(empty)"
++  if (text.length <= 8) return "*".repeat(text.length)
++  return `${text.slice(0, 4)}...${text.slice(-4)}`
++}
++
++function formatDuration(ms) {
++  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
++  const days = Math.floor(totalSeconds / 86400)
++  const hours = Math.floor((totalSeconds % 86400) / 3600)
++  const minutes = Math.floor((totalSeconds % 3600) / 60)
++  const seconds = totalSeconds % 60
++
++  if (days > 0) return `${days}d ${hours}h`
++  if (hours > 0) return `${hours}h ${minutes}m`
++  if (minutes > 0) return `${minutes}m ${seconds}s`
++  return `${seconds}s`
++}
++
++function formatValue(key, value, options) {
++  if (value === null) return "null"
++  if (value === "") return "(empty)"
++
++  if (typeof value === "number" && key === "expires") {
++    const date = new Date(value)
++    const iso = Number.isNaN(date.getTime()) ? "invalid-date" : date.toISOString()
++    const delta = value - Date.now()
++    const relative = delta >= 0 ? `in ${formatDuration(delta)}` : `${formatDuration(Math.abs(delta))} ago`
++    return `${value} (${iso}, ${relative})`
++  }
++
++  if (typeof value === "string" && isSecretField(key)) {
++    if (options.showSecrets) return value
++    return `${redactSecret(value)} (${value.length} chars)`
++  }
++
++  if (Array.isArray(value)) return JSON.stringify(value)
++  if (value && typeof value === "object") return JSON.stringify(value)
++  return String(value)
++}
++
++function mapCredentialForJson(value, options, keyHint) {
++  if (typeof value === "string" && isSecretField(keyHint)) {
++    return options.showSecrets ? value : redactSecret(value)
++  }
++  if (Array.isArray(value)) {
++    return value.map((item) => mapCredentialForJson(item, options, keyHint))
++  }
++  if (value && typeof value === "object") {
++    return Object.fromEntries(
++      Object.entries(value).map(([key, nested]) => [key, mapCredentialForJson(nested, options, key)]),
++    )
++  }
++  return value
++}
++
++function sortCredentialKeys(keys) {
++  const priority = new Map([
++    ["type", 0],
++    ["email", 1],
++    ["projectId", 2],
++    ["expires", 3],
++  ])
++  return [...keys].sort((left, right) => {
++    const leftScore = priority.has(left) ? priority.get(left) : 100
++    const rightScore = priority.has(right) ? priority.get(right) : 100
++    if (leftScore !== rightScore) return leftScore - rightScore
++    return left.localeCompare(right)
++  })
++}
++
++function listCredentialEntries(auth, options) {
++  return Object.entries(auth || {})
++    .filter(([provider, credential]) => {
++      if (options.provider && provider !== options.provider) return false
++      if (options.type && (!credential || credential.type !== options.type)) return false
++      return true
++    })
++    .sort(([left], [right]) => left.localeCompare(right))
++}
++
++function summarizeAuth(auth) {
++  const providers = Object.entries(auth || {}).sort(([left], [right]) => left.localeCompare(right))
++  return providers.map(([provider, credential]) => ({
++    provider,
++    type: credential?.type || "unknown",
++    email: credential?.email || "",
++    projectId: credential?.projectId || "",
++  }))
++}
++
++function getPrimaryAuthEmail(auth) {
++  for (const credential of Object.values(auth || {})) {
++    if (credential && typeof credential === "object" && typeof credential.email === "string" && credential.email) {
++      return credential.email
++    }
++  }
++  return null
++}
++
++function getGoogleCredential(auth) {
++  const credential = auth?.google
++  return credential && typeof credential === "object" ? credential : null
++}
++
++function getAntigravityAccountByEmail(email) {
++  if (!email) return null
++  const store = getAntigravityAccountsStore()
++  if (!store) return null
++  const index = store.accounts.findIndex((account) => account && account.email === email)
++  if (index === -1) return null
++  return {
++    index,
++    account: store.accounts[index],
++  }
++}
++
++function getAntigravityActiveIndexForFamily(store, family) {
++  if (!store) return null
++  const normalizedFamily = normalizeFamily(family)
++  if (typeof store.activeIndexByFamily?.[normalizedFamily] === "number") {
++    return store.activeIndexByFamily[normalizedFamily]
++  }
++  if (typeof store.activeIndex === "number") {
++    return store.activeIndex
++  }
++  return null
++}
++
++function getActiveAntigravityAccountForFamily(family) {
++  const store = getAntigravityAccountsStore()
++  if (!store) return null
++  const index = getAntigravityActiveIndexForFamily(store, family)
++  if (typeof index !== "number" || index < 0 || index >= store.accounts.length) {
++    return null
++  }
++  return {
++    index,
++    family: normalizeFamily(family),
++    account: store.accounts[index],
++  }
++}
++
++function getActiveAntigravityAccountEmail(family) {
++  const result = getActiveAntigravityAccountForFamily(family)
++  return result?.account?.email || null
++}
++
++function authSignature(auth) {
++  return JSON.stringify(auth || {})
++}
++
++function getSortedProfileEntries(store) {
++  return Object.entries(store.profiles || {}).sort(([left], [right]) => left.localeCompare(right))
++}
++
++function detectActiveProfile(store, currentAuth) {
++  const current = authSignature(augmentAuthWithAntigravity(currentAuth))
++  if (store.activeProfile) {
++    const active = store.profiles?.[store.activeProfile]
++    if (active && authSignature(augmentAuthWithAntigravity(active.auth || {})) === current) {
++      return store.activeProfile
++    }
++  }
++  for (const [name, profile] of Object.entries(store.profiles || {})) {
++    if (authSignature(augmentAuthWithAntigravity(profile?.auth || {})) === current) {
++      return name
++    }
++  }
++  return null
++}
++
++function promptLine(promptText) {
++  process.stdout.write(promptText)
++  const buffer = Buffer.alloc(1)
++  let input = ""
++  for (;;) {
++    const bytesRead = fs.readSync(0, buffer, 0, 1, null)
++    if (bytesRead === 0) break
++    const char = buffer.toString("utf8", 0, bytesRead)
++    if (char === "\n") break
++    if (char !== "\r") input += char
++  }
++  return input.trim()
++}
++
++function formatPercent(fraction) {
++  if (typeof fraction !== "number" || !Number.isFinite(fraction)) return "n/a"
++  return `${(fraction * 100).toFixed(0)}%`
++}
++
++function summarizeQuotaForAccount(account) {
++  const quota = account?.cachedQuota || {}
++  const parts = []
++  if (quota["gemini-flash"]) parts.push(`flash ${formatPercent(quota["gemini-flash"].remainingFraction)}`)
++  if (quota["gemini-pro"]) parts.push(`pro ${formatPercent(quota["gemini-pro"].remainingFraction)}`)
++  if (quota.claude) parts.push(`claude ${formatPercent(quota.claude.remainingFraction)}`)
++  return parts.length > 0 ? parts.join(", ") : "quota n/a"
++}
++
++function buildAuthFromAntigravityAccount(email, family) {
++  const active = email ? getAntigravityAccountByEmail(email) : getActiveAntigravityAccountForFamily(family || DEFAULT_FAMILY)
++  if (!active?.account) {
++    console.error(`No Antigravity account available for ${email || normalizeFamily(family || DEFAULT_FAMILY)}`)
++    process.exit(1)
++  }
++
++  const existingSources = [getAuthData(), ...Object.values(getProfilesStore().profiles || {}).map((profile) => profile.auth || {})]
++  let base = null
++  for (const candidate of existingSources) {
++    if (getPrimaryAuthEmail(candidate) === active.account.email) {
++      base = deepClone(candidate)
++      break
++    }
++  }
++  if (!base) {
++    base = {
++      google: {
++        type: "oauth",
++        refresh: active.account.refreshToken || "",
++        access: "",
++        expires: 0,
++        email: active.account.email,
++        projectId: active.account.projectId || "",
++      },
++    }
++  }
++  if (!base.google) base.google = { type: "oauth" }
++  if (!base.google.type) base.google.type = "oauth"
++  if (!base.google.refresh && active.account.refreshToken) base.google.refresh = active.account.refreshToken
++  if (!base.google.email) base.google.email = active.account.email
++  if (!base.google.projectId && active.account.projectId) base.google.projectId = active.account.projectId
++  return base
++}
++
++function augmentAuthWithAntigravity(auth) {
++  const next = deepClone(auth || {})
++  const email = getPrimaryAuthEmail(next)
++  const match = getAntigravityAccountByEmail(email)
++  const credential = getGoogleCredential(next)
++  if (credential && match?.account?.projectId && !credential.projectId) {
++    credential.projectId = match.account.projectId
++  }
++  if (credential && match?.account?.refreshToken && !credential.refresh) {
++    credential.refresh = match.account.refreshToken
++  }
++  return next
++}
++
++function syncAntigravitySelectionByEmail(email, family) {
++  if (!email) return { status: "skipped", reason: "missing-email" }
++  const store = getAntigravityAccountsStore()
++  if (!store) return { status: "skipped", reason: "missing-store" }
++  const normalizedFamily = normalizeFamily(family || DEFAULT_FAMILY)
++  const index = store.accounts.findIndex((account) => account && account.email === email)
++  if (index === -1) return { status: "skipped", reason: "not-found", email, family: normalizedFamily }
++  store.activeIndexByFamily[normalizedFamily] = index
++  if (normalizedFamily === DEFAULT_FAMILY) {
++    store.activeIndex = index
++  }
++  if (store.accounts[index]) {
++    store.accounts[index].lastUsed = Date.now()
++  }
++  writeAntigravityAccountsStore(store)
++  return { status: "updated", email, index, family: normalizedFamily }
++}
++
++function getTokenHealth(auth) {
++  const credential = getGoogleCredential(auth)
++  if (!credential) return { hasCredential: false }
++  const expires = typeof credential.expires === "number" ? credential.expires : 0
++  const delta = expires - Date.now()
++  return {
++    hasCredential: true,
++    expires,
++    expired: expires > 0 ? delta <= 0 : false,
++    relative: expires > 0 ? (delta >= 0 ? `in ${formatDuration(delta)}` : `${formatDuration(Math.abs(delta))} ago`) : "unknown",
++    hasRefresh: Boolean(credential.refresh),
++  }
++}
++
++function runPowerShellCapture(command) {
++  const result = childProcess.spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
++    encoding: "utf8",
++    windowsHide: true,
++  })
++  return {
++    status: result.status,
++    stdout: result.stdout || "",
++    stderr: result.stderr || "",
++    error: result.error,
++  }
++}
++
++function getRunningOpencodeProcesses() {
++  const result = runPowerShellCapture("Get-Process opencode -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | ConvertTo-Json -Compress")
++  if (result.error || result.status !== 0 || !result.stdout.trim()) return []
++  try {
++    const parsed = JSON.parse(result.stdout)
++    return Array.isArray(parsed) ? parsed : [parsed]
++  } catch {
++    return []
++  }
++}
++
++function stopRunningOpencodeProcesses() {
++  const running = getRunningOpencodeProcesses()
++  if (running.length === 0) {
++    return { count: 0 }
++  }
++  runPowerShellCapture("Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force")
++  return { count: running.length }
++}
++
++function restartResolvedBinary(target) {
++  const stopped = stopRunningOpencodeProcesses()
++  const launcher = process.platform === "win32"
++    ? `Start-Sleep -Milliseconds ${RESTART_DELAY_MS}; & '${target.replace(/'/g, "''")}'`
++    : `sleep 1; '${target.replace(/'/g, "'\\''")}'`
++  if (process.platform === "win32") {
++    childProcess.spawn("powershell.exe", ["-NoProfile", "-WindowStyle", "Normal", "-Command", launcher], {
++      detached: true,
++      stdio: "ignore",
++      windowsHide: false,
++      cwd: process.cwd(),
++    }).unref()
++  } else {
++    childProcess.spawn(target, [], {
++      detached: true,
++      stdio: "ignore",
++      cwd: process.cwd(),
++    }).unref()
++  }
++  return { stopped: stopped.count, relaunched: true }
++}
++
++function getRecentSessions() {
++  const launcher = getAvailablePythonLauncher()
++  if (!fs.existsSync(getOpencodeDbPath()) || !launcher) {
++    return []
++  }
++  const script = [
++    "import sqlite3, pathlib, json",
++    "p = pathlib.Path.home()/'.local'/'share'/'opencode'/'opencode.db'",
++    "con = sqlite3.connect(p)",
++    "con.row_factory = sqlite3.Row",
++    "cur = con.cursor()",
++    "rows = cur.execute('select id, title, time_updated from session order by time_updated desc limit 5').fetchall()",
++    "print(json.dumps([dict(r) for r in rows]))",
++  ].join("; ")
++  const result = childProcess.spawnSync(launcher.command, [...launcher.args, "-c", script], {
++    encoding: "utf8",
++    windowsHide: true,
++  })
++  if (result.status !== 0 || !result.stdout.trim()) return []
++  try {
++    const parsed = JSON.parse(result.stdout)
++    return Array.isArray(parsed) ? parsed : []
++  } catch {
++    return []
++  }
++}
++
++function collectStatus() {
++  const auth = getAuthData()
++  const profilesStore = getProfilesStore()
++  const antigravityStore = getAntigravityAccountsStore()
++  const antigravityConfig = getAntigravityConfig()
++  const authEmail = getPrimaryAuthEmail(auth)
++  const profileName = detectActiveProfile(profilesStore, auth) || profilesStore.activeProfile || null
++  const geminiActive = getActiveAntigravityAccountForFamily("gemini")
++  const claudeActive = getActiveAntigravityAccountForFamily("claude")
++  const token = getTokenHealth(auth)
++  const runningProcesses = getRunningOpencodeProcesses()
++  const recentSessions = getRecentSessions()
++  const drift = []
++  const matchedAccount = getAntigravityAccountByEmail(authEmail)
++  const googleCredential = getGoogleCredential(auth)
++
++  if (!authEmail) drift.push({ code: "missing_auth_email", level: "fail", message: "auth.json has no email." })
++  if (!matchedAccount) drift.push({ code: "missing_antigravity_account", level: "warn", message: authEmail ? `No Antigravity account matches ${authEmail}.` : "No Antigravity match for auth.json." })
++  if (authEmail && geminiActive?.account?.email && authEmail !== geminiActive.account.email) {
++    drift.push({
++      code: "antigravity_gemini_mismatch",
++      level: "warn",
++      message: `Antigravity Gemini is ${geminiActive.account.email}, auth.json is ${authEmail}.`,
++    })
++  }
++  if (googleCredential && !googleCredential.projectId && matchedAccount?.account?.projectId) {
++    drift.push({
++      code: "missing_auth_project_id",
++      level: "warn",
++      message: `auth.json is missing projectId while Antigravity has ${matchedAccount.account.projectId}.`,
++    })
++  }
++  if (token.hasCredential && token.expired && token.hasRefresh) {
++    drift.push({ code: "expired_access_token", level: "warn", message: `Access token expired ${token.relative}, but a refresh token exists.` })
++  }
++  if (token.hasCredential && token.expired && !token.hasRefresh) {
++    drift.push({ code: "expired_without_refresh", level: "fail", message: `Access token expired ${token.relative} and no refresh token exists.` })
++  }
++  if (!profileName) {
++    drift.push({ code: "untracked_profile", level: "warn", message: "Current auth.json does not match an active saved profile." })
++  }
++
++  return {
++    paths: {
++      auth: getAuthPath(),
++      profiles: getProfilesPath(),
++      antigravityAccounts: getAntigravityAccountsPath(),
++      antigravityConfig: getAntigravityConfigPath(),
++      opencodeDb: getOpencodeDbPath(),
++    },
++    profile: {
++      activeProfile: profileName,
++      savedProfileCount: Object.keys(profilesStore.profiles || {}).length,
++    },
++    auth: {
++      email: authEmail,
++      providerSummary: summarizeAuth(auth),
++      token,
++      projectId: googleCredential?.projectId || "",
++    },
++    antigravity: {
++      config: antigravityConfig,
++      accountCount: antigravityStore?.accounts?.length || 0,
++      geminiActiveEmail: geminiActive?.account?.email || null,
++      geminiActiveIndex: geminiActive?.index ?? null,
++      claudeActiveEmail: claudeActive?.account?.email || null,
++      claudeActiveIndex: claudeActive?.index ?? null,
++      matchedEmail: matchedAccount?.account?.email || null,
++      matchedIndex: matchedAccount?.index ?? null,
++      matchedProjectId: matchedAccount?.account?.projectId || "",
++      matchedQuota: matchedAccount?.account ? summarizeQuotaForAccount(matchedAccount.account) : null,
++    },
++    runtime: {
++      processCount: runningProcesses.length,
++      processes: runningProcesses,
++      recentSessions,
++    },
++    drift,
++  }
++}
++
++function printAuthRootHelp() {
++  console.log(`opencode auth
++
++Enhanced auth and account management for local auth.json and the Antigravity plugin store.
++
++Commands:
++  opencode auth list [options]           list credentials and drift warnings
++  opencode auth profiles [--json]        list saved auth profiles
++  opencode auth current [--json]         show active profile, auth store, plugin store, and runtime state
++  opencode auth doctor [--json]          run auth consistency checks with repair hints
++  opencode auth repair [--json]          repair common drift between auth.json and Antigravity
++  opencode auth save <name> [options]    save current auth or an Antigravity account as a profile
++  opencode auth switch [name] [options]  switch profile, sync Antigravity, optionally restart Opencode
++  opencode auth rename <old> <new>       rename a saved profile
++  opencode auth clone <src> <dst>        duplicate a saved profile
++  opencode auth delete <name>            delete a saved profile
++
++Notes:
++  - The Antigravity plugin uses ${getAntigravityAccountsPath()}.
++  - Standard Google auth uses ${getAuthPath()}.
++  - current, doctor, and repair surface mismatches between the two stores.`)
++}
++
++function printEnhancedAuthListHelp() {
++  console.log(`opencode auth list
++
++Enhanced local formatter for ${path.join("~", ".local", "share", "opencode", "auth.json")}
++
++Options:
++  --json              print filtered credentials as JSON
++  --provider <name>   filter to one provider (for example: google)
++  --type <type>       filter by credential type (for example: oauth)
++  --show-secrets      reveal full token/key values instead of redacting them
++  --save <name>       save current auth.json as a named profile
++  --switch [name]     switch auth.json to a saved profile before listing; omit name for interactive selection
++  --profiles          list saved auth profiles instead of current credentials
++  --family <name>     Antigravity family to sync when switching (gemini or claude)
++  --restart           restart Opencode after a successful switch
++  --native            bypass this formatter and run the bundled opencode binary
++  -h, --help          show help`)
++}
++
++function printEnhancedProfilesHelp() {
++  console.log(`opencode auth profiles
++
++List saved auth profiles from ${path.join("~", ".local", "share", "opencode", "auth.profiles.json")}
++
++Options:
++  --json              print profile metadata as JSON
++  -h, --help          show help`)
++}
++
++function printEnhancedSaveHelp() {
++  console.log(`opencode auth save <name>
++
++Save current auth.json as a named profile.
++
++Options:
++  --from-antigravity [email]
++                      save the active Antigravity account, or a specific account email, as the profile
++  --family <name>     Antigravity family to read from when using --from-antigravity (default: gemini)`)
++}
++
++function printEnhancedSwitchHelp() {
++  console.log(`opencode auth switch [name]
++
++Switch the active ${path.join("~", ".local", "share", "opencode", "auth.json")} to a saved profile.
++Omit the name to choose interactively.
++
++Options:
++  --family <name>     Antigravity family to sync (gemini or claude)
++  --restart           restart Opencode after the switch`)
++}
++
++function printEnhancedCurrentHelp() {
++  console.log("opencode auth current\n\nShow the active profile, auth.json account, Antigravity active accounts, and runtime status.\n\nOptions:\n  --json              print the status payload as JSON")
++}
++
++function printEnhancedDoctorHelp() {
++  console.log("opencode auth doctor\n\nRun auth consistency checks across auth.json, profiles, Antigravity accounts, and live runtime state.\n\nOptions:\n  --json              print the doctor payload as JSON")
++}
++
++function printEnhancedRepairHelp() {
++  console.log("opencode auth repair\n\nRepair common drift by syncing Antigravity to auth.json, backfilling projectId, and fixing the active profile pointer.\n\nOptions:\n  --json              print the repair result as JSON")
++}
++
++function parseEnhancedAuthListOptions(args) {
++  const options = {
++    family: DEFAULT_FAMILY,
++    json: false,
++    native: false,
++    profiles: false,
++    provider: undefined,
++    restart: false,
++    save: undefined,
++    showSecrets: false,
++    switch: undefined,
++    type: undefined,
++  }
++
++  for (let i = 2; i < args.length; ) {
++    const arg = args[i]
++    if (arg === "--json") {
++      options.json = true
++      i += 1
++      continue
++    }
++    if (arg === "--show-secrets") {
++      options.showSecrets = true
++      i += 1
++      continue
++    }
++    if (arg === "--profiles") {
++      options.profiles = true
++      i += 1
++      continue
++    }
++    if (arg === "--restart") {
++      options.restart = true
++      i += 1
++      continue
++    }
++    if (arg === "--native") {
++      options.native = true
++      i += 1
++      continue
++    }
++    if (arg === "-h" || arg === "--help") {
++      printEnhancedAuthListHelp()
++      process.exit(0)
++    }
++
++    const providerArg = parseNamedValueArg(args, i, "--provider")
++    if (providerArg) {
++      options.provider = providerArg.value
++      i += providerArg.consumed
++      continue
++    }
++
++    const typeArg = parseNamedValueArg(args, i, "--type")
++    if (typeArg) {
++      options.type = typeArg.value
++      i += typeArg.consumed
++      continue
++    }
++
++    const saveArg = parseNamedValueArg(args, i, "--save")
++    if (saveArg) {
++      options.save = saveArg.value
++      i += saveArg.consumed
++      continue
++    }
++
++    const familyArg = parseNamedValueArg(args, i, "--family")
++    if (familyArg) {
++      options.family = normalizeFamily(familyArg.value)
++      i += familyArg.consumed
++      continue
++    }
++
++    if (arg === "--switch") {
++      const next = args[i + 1]
++      options.switch = !next || next.startsWith("-") ? INTERACTIVE_SWITCH : normalizeSwitchValue(next)
++      i += !next || next.startsWith("-") ? 1 : 2
++      continue
++    }
++    if (arg.startsWith("--switch=")) {
++      options.switch = normalizeSwitchValue(arg.slice("--switch=".length))
++      i += 1
++      continue
++    }
++
++    if (arg === "--print-logs" || arg === "--pure" || arg === "--log-level" || arg.startsWith("--log-level=")) {
++      options.native = true
++      i += 1
++      continue
++    }
++
++    console.error(`Unknown enhanced auth list option: ${arg}`)
++    console.error('Use "opencode auth list --help" for enhanced options or add --native to use the bundled binary output.')
++    process.exit(1)
++  }
++
++  if (options.save && typeof options.switch !== "undefined") {
++    console.error("Use either --save or --switch, not both in the same command.")
++    process.exit(1)
++  }
++
++  return options
++}
++
++function parseProfilesOptions(args) {
++  const options = { json: false }
++  for (let i = 2; i < args.length; i += 1) {
++    const arg = args[i]
++    if (arg === "--json") {
++      options.json = true
++      continue
++    }
++    if (arg === "-h" || arg === "--help") {
++      printEnhancedProfilesHelp()
++      process.exit(0)
++    }
++    console.error(`Unknown auth profiles option: ${arg}`)
++    process.exit(1)
++  }
++  return options
++}
++
++function parseCurrentLikeOptions(args, helpPrinter) {
++  const options = { json: false }
++  for (let i = 2; i < args.length; i += 1) {
++    const arg = args[i]
++    if (arg === "--json") {
++      options.json = true
++      continue
++    }
++    if (arg === "-h" || arg === "--help") {
++      helpPrinter()
++      process.exit(0)
++    }
++    console.error(`Unknown option: ${arg}`)
++    process.exit(1)
++  }
++  return options
++}
++
++function parseSwitchOptions(args) {
++  const options = {
++    family: DEFAULT_FAMILY,
++    profileName: args[2] && !args[2].startsWith("-") ? normalizeSwitchValue(args[2]) : INTERACTIVE_SWITCH,
++    restart: false,
++  }
++  const startIndex = args[2] && !args[2].startsWith("-") ? 3 : 2
++  for (let i = startIndex; i < args.length; ) {
++    const arg = args[i]
++    if (arg === "--restart") {
++      options.restart = true
++      i += 1
++      continue
++    }
++    const familyArg = parseNamedValueArg(args, i, "--family")
++    if (familyArg) {
++      options.family = normalizeFamily(familyArg.value)
++      i += familyArg.consumed
++      continue
++    }
++    if (arg === "-h" || arg === "--help") {
++      printEnhancedSwitchHelp()
++      process.exit(0)
++    }
++    console.error(`Unknown auth switch option: ${arg}`)
++    process.exit(1)
++  }
++  return options
++}
++
++function parseSaveOptions(args) {
++  if (args.includes("-h") || args.includes("--help")) {
++    printEnhancedSaveHelp()
++    process.exit(0)
++  }
++  const profileName = args[2]
++  const options = {
++    family: DEFAULT_FAMILY,
++    fromAntigravity: false,
++    antigravityEmail: undefined,
++    profileName,
++  }
++  for (let i = 3; i < args.length; ) {
++    const arg = args[i]
++    const familyArg = parseNamedValueArg(args, i, "--family")
++    if (familyArg) {
++      options.family = normalizeFamily(familyArg.value)
++      i += familyArg.consumed
++      continue
++    }
++    if (arg === "--from-antigravity") {
++      const next = args[i + 1]
++      options.fromAntigravity = true
++      options.antigravityEmail = !next || next.startsWith("-") ? undefined : next
++      i += !next || next.startsWith("-") ? 1 : 2
++      continue
++    }
++    if (arg.startsWith("--from-antigravity=")) {
++      options.fromAntigravity = true
++      options.antigravityEmail = arg.slice("--from-antigravity=".length)
++      i += 1
++      continue
++    }
++    console.error(`Unknown auth save option: ${arg}`)
++    process.exit(1)
++  }
++  return options
++}
++
++function saveProfile(profileName, options = {}) {
++  if (!profileName) {
++    console.error("Missing profile name. Usage: opencode auth save <name>")
++    process.exit(1)
++  }
++
++  const auth = options.fromAntigravity
++    ? buildAuthFromAntigravityAccount(options.antigravityEmail, options.family)
++    : augmentAuthWithAntigravity(getAuthData())
++
++  const store = getProfilesStore()
++  const currentActiveProfile = detectActiveProfile(store, getAuthData()) || store.activeProfile || null
++  store.profiles[profileName] = {
++    savedAt: new Date().toISOString(),
++    auth: deepClone(auth),
++  }
++  store.activeProfile = currentActiveProfile || profileName
++  writeProfilesStore(store)
++  return store.profiles[profileName]
++}
++
++function renameProfile(sourceName, targetName) {
++  const store = getProfilesStore()
++  if (!sourceName || !targetName) {
++    console.error("Usage: opencode auth rename <old> <new>")
++    process.exit(1)
++  }
++  if (!store.profiles[sourceName]) {
++    console.error(`Unknown auth profile: ${sourceName}`)
++    process.exit(1)
++  }
++  if (store.profiles[targetName]) {
++    console.error(`Target auth profile already exists: ${targetName}`)
++    process.exit(1)
++  }
++  store.profiles[targetName] = store.profiles[sourceName]
++  delete store.profiles[sourceName]
++  if (store.activeProfile === sourceName) {
++    store.activeProfile = targetName
++  }
++  writeProfilesStore(store)
++}
++
++function deleteProfile(profileName) {
++  const store = getProfilesStore()
++  if (!profileName) {
++    console.error("Usage: opencode auth delete <name>")
++    process.exit(1)
++  }
++  if (!store.profiles[profileName]) {
++    console.error(`Unknown auth profile: ${profileName}`)
++    process.exit(1)
++  }
++  delete store.profiles[profileName]
++  if (store.activeProfile === profileName) {
++    store.activeProfile = null
++  }
++  writeProfilesStore(store)
++}
++
++function cloneProfile(sourceName, targetName) {
++  const store = getProfilesStore()
++  if (!sourceName || !targetName) {
++    console.error("Usage: opencode auth clone <src> <dst>")
++    process.exit(1)
++  }
++  if (!store.profiles[sourceName]) {
++    console.error(`Unknown auth profile: ${sourceName}`)
++    process.exit(1)
++  }
++  if (store.profiles[targetName]) {
++    console.error(`Target auth profile already exists: ${targetName}`)
++    process.exit(1)
++  }
++  store.profiles[targetName] = {
++    savedAt: new Date().toISOString(),
++    auth: deepClone(store.profiles[sourceName].auth || {}),
++  }
++  writeProfilesStore(store)
++}
++
++function selectProfileInteractively(reason, family) {
++  const store = getProfilesStore()
++  const entries = getSortedProfileEntries(store)
++  if (entries.length === 0) {
++    console.error("No saved auth profiles exist yet. Save one with: opencode auth save <name>")
++    process.exit(1)
++  }
++
++  const currentAuth = fs.existsSync(getAuthPath()) ? getAuthData() : {}
++  const activeProfile = detectActiveProfile(store, currentAuth) || store.activeProfile || null
++  const normalizedFamily = normalizeFamily(family || DEFAULT_FAMILY)
++  const activeFamilyEmail = getActiveAntigravityAccountEmail(normalizedFamily)
++
++  console.log(reason)
++  console.log("")
++
++  entries.forEach(([name, profile], index) => {
++    const email = getPrimaryAuthEmail(profile.auth || {})
++    const antigravity = getAntigravityAccountByEmail(email)
++    const badges = []
++    if (name === activeProfile) badges.push("profile-active")
++    if (email && email === activeFamilyEmail) badges.push(`${normalizedFamily}-active`)
++    if (!antigravity) badges.push("no-antigravity")
++    const badgeText = badges.length > 0 ? ` [${badges.join(", ")}]` : ""
++    console.log(`${index + 1}. ${name}${badgeText}`)
++    console.log(`   savedAt: ${profile?.savedAt || "unknown"}`)
++    for (const item of summarizeAuth(profile?.auth || {})) {
++      const emailText = item.email ? `, ${item.email}` : ""
++      const projectText = item.projectId ? `, project ${item.projectId}` : ""
++      console.log(`   ${item.provider}: ${item.type}${emailText}${projectText}`)
++    }
++    if (antigravity?.account) {
++      console.log(`   antigravity: ${summarizeQuotaForAccount(antigravity.account)}${antigravity.account.projectId ? `, project ${antigravity.account.projectId}` : ""}`)
++    }
++    if (index < entries.length - 1) console.log("")
++  })
++
++  console.log("")
++  const input = promptLine("Select profile by number or name: ")
++  if (!input) {
++    console.error("No profile selected.")
++    process.exit(1)
++  }
++  if (/^\d+$/.test(input)) {
++    const numericIndex = Number.parseInt(input, 10)
++    if (numericIndex < 1 || numericIndex > entries.length) {
++      console.error(`Invalid profile number: ${input}`)
++      process.exit(1)
++    }
++    return entries[numericIndex - 1][0]
++  }
++  const exactMatch = entries.find(([name]) => name === input)
++  if (exactMatch) return exactMatch[0]
++  console.error(`Unknown auth profile selection: ${input}`)
++  console.error(`Available profiles: ${entries.map(([name]) => name).join(", ")}`)
++  process.exit(1)
++}
++
++function switchProfile(profileName, options = {}) {
++  const normalizedFamily = normalizeFamily(options.family || DEFAULT_FAMILY)
++  const selectedProfileName = normalizeSwitchValue(profileName) === INTERACTIVE_SWITCH
++    ? selectProfileInteractively(options.promptReason || "Select an auth profile to switch to:", normalizedFamily)
++    : profileName
++
++  if (!selectedProfileName) {
++    console.error("Missing profile name. Usage: opencode auth switch <name>")
++    process.exit(1)
++  }
++
++  const store = getProfilesStore()
++  const profile = store.profiles[selectedProfileName]
++  if (!profile) {
++    const names = Object.keys(store.profiles || {}).sort()
++    console.error(`Unknown auth profile: ${selectedProfileName}`)
++    if (names.length > 0) {
++      console.error(`Available profiles: ${names.join(", ")}`)
++    } else {
++      console.error("No saved auth profiles exist yet. Save one with: opencode auth save <name>")
++    }
++    process.exit(1)
++  }
++
++  const authData = augmentAuthWithAntigravity(deepClone(profile.auth || {}))
++  writeAuthData(authData)
++  const synced = syncAntigravitySelectionByEmail(getPrimaryAuthEmail(authData), normalizedFamily)
++  store.activeProfile = selectedProfileName
++  writeProfilesStore(store)
++  return {
++    name: selectedProfileName,
++    profile,
++    synced,
++    authData,
++  }
++}
++
++function repairState() {
++  const status = collectStatus()
++  const actions = []
++  const auth = getAuthData()
++  const store = getProfilesStore()
++  const authEmail = status.auth.email
++  const googleCredential = getGoogleCredential(auth)
++
++  if (authEmail) {
++    const syncResult = syncAntigravitySelectionByEmail(authEmail, "gemini")
++    if (syncResult.status === "updated") {
++      actions.push(`synced Antigravity Gemini active account to ${authEmail}`)
++    }
++  }
++
++  const augmented = augmentAuthWithAntigravity(auth)
++  if (JSON.stringify(augmented) !== JSON.stringify(auth)) {
++    writeAuthData(augmented)
++    if (!googleCredential?.projectId && getGoogleCredential(augmented)?.projectId) {
++      actions.push(`backfilled auth.json projectId to ${getGoogleCredential(augmented).projectId}`)
++    } else {
++      actions.push("updated auth.json from Antigravity metadata")
++    }
++  }
++
++  const detectedProfile = detectActiveProfile(store, augmented)
++  if (detectedProfile && store.activeProfile !== detectedProfile) {
++    store.activeProfile = detectedProfile
++    writeProfilesStore(store)
++    actions.push(`set active profile to ${detectedProfile}`)
++  }
++
++  if (detectedProfile && store.profiles[detectedProfile]) {
++    const profileAuth = augmentAuthWithAntigravity(store.profiles[detectedProfile].auth || {})
++    if (JSON.stringify(profileAuth) !== JSON.stringify(store.profiles[detectedProfile].auth || {})) {
++      store.profiles[detectedProfile].auth = profileAuth
++      writeProfilesStore(store)
++      actions.push(`updated profile ${detectedProfile} with Antigravity metadata`)
++    }
++  }
++
++  return {
++    before: status,
++    after: collectStatus(),
++    actions,
++  }
++}
++
++function buildDoctorChecks(status) {
++  const checks = []
++  checks.push({
++    code: "auth_file",
++    level: status.auth.email ? "ok" : "fail",
++    message: status.auth.email ? `auth.json loaded for ${status.auth.email}` : "auth.json has no email",
++  })
++  checks.push({
++    code: "profiles_store",
++    level: status.profile.savedProfileCount > 0 ? "ok" : "warn",
++    message: `${status.profile.savedProfileCount} saved profile${status.profile.savedProfileCount === 1 ? "" : "s"}`,
++  })
++  checks.push({
++    code: "antigravity_store",
++    level: status.antigravity.accountCount > 0 ? "ok" : "warn",
++    message: `${status.antigravity.accountCount} Antigravity account${status.antigravity.accountCount === 1 ? "" : "s"}`,
++  })
++  checks.push({
++    code: "gemini_sync",
++    level: status.auth.email && status.antigravity.geminiActiveEmail === status.auth.email ? "ok" : "warn",
++    message: status.antigravity.geminiActiveEmail
++      ? `Gemini active account: ${status.antigravity.geminiActiveEmail}`
++      : "No Gemini active account found",
++  })
++  checks.push({
++    code: "project_id",
++    level: status.auth.projectId
++      ? "ok"
++      : status.antigravity.matchedProjectId
++        ? "warn"
++        : "warn",
++    message: status.auth.projectId
++      ? `auth.json projectId: ${status.auth.projectId}`
++      : status.antigravity.matchedProjectId
++        ? `auth.json missing projectId; Antigravity has ${status.antigravity.matchedProjectId}`
++        : "No projectId available",
++  })
++  checks.push({
++    code: "token_health",
++    level: !status.auth.token.hasCredential
++      ? "fail"
++      : status.auth.token.expired
++        ? status.auth.token.hasRefresh ? "warn" : "fail"
++        : "ok",
++    message: !status.auth.token.hasCredential
++      ? "No Google credential found"
++      : status.auth.token.expires
++        ? `Access token ${status.auth.token.expired ? "expired" : "valid"} ${status.auth.token.relative}`
++        : "Access token expiry unknown",
++  })
++  checks.push({
++    code: "runtime_processes",
++    level: status.runtime.processCount > 0 ? "warn" : "ok",
++    message: `${status.runtime.processCount} running Opencode process${status.runtime.processCount === 1 ? "" : "es"}`,
++  })
++  return checks.concat(status.drift)
++}
++
++function printCurrentStatus(status, asJson) {
++  if (asJson) {
++    console.log(JSON.stringify(status, null, 2))
++    process.exit(0)
++  }
++
++  console.log("Auth Current")
++  console.log("")
++  console.log(`profile: ${status.profile.activeProfile || "(none)"}`)
++  console.log(`auth.json: ${status.auth.email || "(missing)"}`)
++  console.log(`antigravity gemini: ${status.antigravity.geminiActiveEmail || "(none)"}`)
++  console.log(`antigravity claude: ${status.antigravity.claudeActiveEmail || "(none)"}`)
++  console.log(`saved profiles: ${status.profile.savedProfileCount}`)
++  console.log(`running opencode processes: ${status.runtime.processCount}`)
++  console.log(`recent sessions: ${status.runtime.recentSessions.length}`)
++  if (status.auth.projectId || status.antigravity.matchedProjectId) {
++    console.log(`projectId: ${status.auth.projectId || `(from antigravity: ${status.antigravity.matchedProjectId})`}`)
++  }
++  if (status.antigravity.matchedQuota) {
++    console.log(`quota: ${status.antigravity.matchedQuota}`)
++  }
++  console.log("")
++  if (status.drift.length === 0) {
++    console.log("drift: none")
++  } else {
++    console.log("drift:")
++    for (const item of status.drift) {
++      console.log(`  [${item.level.toUpperCase()}] ${item.message}`)
++    }
++  }
++  if (status.runtime.processCount > 0) {
++    console.log("")
++    console.log("note: live Opencode sessions may need restart to pick up account changes.")
++  }
++  process.exit(0)
++}
++
++function printDoctor(status, asJson) {
++  const checks = buildDoctorChecks(status)
++  const payload = {
++    status,
++    checks,
++    recommendedActions: checks.filter((item) => item.level !== "ok").map((item) => {
++      if (item.code === "antigravity_gemini_mismatch") return "Run `opencode auth repair` or `opencode auth switch --restart`."
++      if (item.code === "missing_auth_project_id") return "Run `opencode auth repair` to backfill projectId from Antigravity."
++      if (item.code === "runtime_processes") return "Use `opencode auth switch --restart` after changing accounts."
++      if (item.code === "expired_access_token") return "Refresh via login flow if commands start failing."
++      if (item.code === "missing_antigravity_account") return "Add the account to Antigravity or switch to an account it knows."
++      return item.message
++    }),
++  }
++
++  if (asJson) {
++    console.log(JSON.stringify(payload, null, 2))
++    process.exit(0)
++  }
++
++  console.log("Auth Doctor")
++  console.log("")
++  for (const item of checks) {
++    console.log(`[${item.level.toUpperCase()}] ${item.message}`)
++  }
++  if (payload.recommendedActions.length > 0) {
++    console.log("")
++    console.log("recommended:")
++    for (const action of payload.recommendedActions) {
++      console.log(`  - ${action}`)
++    }
++  }
++  process.exit(0)
++}
++
++function printRepairResult(result, asJson) {
++  if (asJson) {
++    console.log(JSON.stringify(result, null, 2))
++    process.exit(0)
++  }
++  console.log("Auth Repair")
++  console.log("")
++  if (result.actions.length === 0) {
++    console.log("No repairs were needed.")
++  } else {
++    for (const action of result.actions) {
++      console.log(`- ${action}`)
++    }
++  }
++  if (result.after.drift.length > 0) {
++    console.log("")
++    console.log("remaining drift:")
++    for (const item of result.after.drift) {
++      console.log(`  [${item.level.toUpperCase()}] ${item.message}`)
++    }
++  }
++  process.exit(0)
++}
++
++function printCredentialList(auth, options) {
++  const entries = listCredentialEntries(auth, options)
++  const authEmail = getPrimaryAuthEmail(auth)
++  const antigravityEmail = getActiveAntigravityAccountEmail(options.family)
++
++  if (options.json) {
++    const credentials = Object.fromEntries(
++      entries.map(([provider, credential]) => [provider, mapCredentialForJson(credential, options, provider)]),
++    )
++    console.log(
++      JSON.stringify(
++        {
++          path: getAuthPath(),
++          count: entries.length,
++          credentials,
++          antigravityActiveEmail: antigravityEmail,
++          family: options.family,
++          drift: authEmail && antigravityEmail && authEmail !== antigravityEmail,
++        },
++        null,
++        2,
++      ),
++    )
++    process.exit(0)
++  }
++
++  console.log(`Credentials ${getAuthPath()}`)
++  console.log("")
++
++  if (authEmail && antigravityEmail && authEmail !== antigravityEmail) {
++    console.log(`Warning: Antigravity ${options.family} active account is ${antigravityEmail}, but auth.json is ${authEmail}.`)
++    console.log("Use `opencode auth switch` or `opencode auth repair` to sync both stores.")
++    console.log("")
++  }
++
++  if (entries.length === 0) {
++    console.log("No credentials matched the current filters.")
++    process.exit(0)
++  }
++
++  entries.forEach(([provider, credential], index) => {
++    console.log(`${index + 1}. ${provider}`)
++    for (const key of sortCredentialKeys(Object.keys(credential || {}))) {
++      console.log(`   ${key}: ${formatValue(key, credential[key], options)}`)
++    }
++    const ag = getAntigravityAccountByEmail(credential?.email)
++    if (ag?.account) {
++      console.log(`   antigravity: ${summarizeQuotaForAccount(ag.account)}${ag.account.projectId ? `, project ${ag.account.projectId}` : ""}`)
++    }
++    if (index < entries.length - 1) console.log("")
++  })
++
++  console.log("")
++  console.log(`${entries.length} credential${entries.length === 1 ? "" : "s"}`)
++  process.exit(0)
++}
++
++function printProfilesList(options) {
++  const store = getProfilesStore()
++  const currentAuth = fs.existsSync(getAuthPath()) ? getAuthData() : {}
++  const detectedActive = detectActiveProfile(store, currentAuth)
++  const activeProfile = detectedActive || store.activeProfile || null
++  const entries = getSortedProfileEntries(store)
++  const family = DEFAULT_FAMILY
++  const activeFamilyEmail = getActiveAntigravityAccountEmail(family)
++
++  if (options.json) {
++    console.log(
++      JSON.stringify(
++        {
++          path: getProfilesPath(),
++          activeProfile,
++          count: entries.length,
++          profiles: Object.fromEntries(
++            entries.map(([name, profile]) => {
++              const email = getPrimaryAuthEmail(profile?.auth || {})
++              const antigravity = getAntigravityAccountByEmail(email)
++              return [
++                name,
++                {
++                  savedAt: profile?.savedAt || null,
++                  summary: summarizeAuth(profile?.auth || {}),
++                  antigravity: antigravity?.account
++                    ? {
++                        email: antigravity.account.email,
++                        index: antigravity.index,
++                        quota: summarizeQuotaForAccount(antigravity.account),
++                        projectId: antigravity.account.projectId || "",
++                        activeForGemini: antigravity.account.email === activeFamilyEmail,
++                      }
++                    : null,
++                },
++              ]
++            }),
++          ),
++        },
++        null,
++        2,
++      ),
++    )
++    process.exit(0)
++  }
++
++  console.log(`Auth Profiles ${getProfilesPath()}`)
++  console.log("")
++
++  if (entries.length === 0) {
++    console.log("No saved auth profiles.")
++    console.log("Save the current credentials with: opencode auth save <name>")
++    process.exit(0)
++  }
++
++  entries.forEach(([name, profile], index) => {
++    const email = getPrimaryAuthEmail(profile?.auth || {})
++    const antigravity = getAntigravityAccountByEmail(email)
++    const marker = name === activeProfile ? "*" : " "
++    const badge = email && email === activeFamilyEmail ? " [gemini-active]" : ""
++    console.log(`${marker} ${name}${badge}`)
++    console.log(`   savedAt: ${profile?.savedAt || "unknown"}`)
++    for (const item of summarizeAuth(profile?.auth || {})) {
++      const emailText = item.email ? `, ${item.email}` : ""
++      const projectText = item.projectId ? `, project ${item.projectId}` : ""
++      console.log(`   ${item.provider}: ${item.type}${emailText}${projectText}`)
++    }
++    if (antigravity?.account) {
++      console.log(`   antigravity: ${summarizeQuotaForAccount(antigravity.account)}${antigravity.account.projectId ? `, project ${antigravity.account.projectId}` : ""}`)
++    } else {
++      console.log("   antigravity: no matching account")
++    }
++    if (index < entries.length - 1) console.log("")
++  })
++
++  console.log("")
++  console.log(`${entries.length} profile${entries.length === 1 ? "" : "s"}`)
++  if (activeProfile) console.log(`Active profile: ${activeProfile}`)
++  process.exit(0)
++}
++
++function maybeWarnOnLaunch(args) {
++  if (args.length > 0 && isAuthRoot(args[0])) return
++  if (args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-v")) return
++  try {
++    const status = collectStatus()
++    const mismatch = status.drift.find((item) => item.code === "antigravity_gemini_mismatch")
++    if (mismatch) {
++      console.error(`[auth] Warning: ${mismatch.message}`)
++      console.error("[auth] Run `opencode auth repair` or `opencode auth switch --restart` before starting a new session.")
++    }
++  } catch {
++    // ignore launch-time warnings on read failure
++  }
++}
++
++function handleEnhancedAuthRoot(args) {
++  if (!isAuthRootHelpRequest(args)) return false
++  printAuthRootHelp()
++  process.exit(0)
++}
++
++function handleEnhancedAuthList(args, resolvedBinary) {
++  if (!isAuthListCommand(args)) return false
++
++  const options = parseEnhancedAuthListOptions(args)
++  if (options.native) {
++    process.argv = process.argv.filter((arg) => arg !== "--native")
++    return false
++  }
++
++  if (options.save) {
++    saveProfile(options.save)
++    console.log(`Saved current credentials as profile: ${options.save}`)
++    console.log("")
++  }
++
++  if (typeof options.switch !== "undefined") {
++    const result = switchProfile(options.switch, {
++      family: options.family,
++      promptReason: "Select a profile to switch to before listing credentials:",
++    })
++    console.log(`Switched active credentials to profile: ${result.name}`)
++    if (result.synced?.status === "updated") {
++      console.log(`Synced Antigravity ${result.synced.family} active account to: ${result.synced.email}`)
++    }
++    if (options.restart) {
++      const restarted = restartResolvedBinary(resolvedBinary)
++      console.log(`Restart requested: stopped ${restarted.stopped} Opencode process${restarted.stopped === 1 ? "" : "es"} and launched a fresh session.`)
++    }
++    console.log("")
++  }
++
++  if (options.profiles) {
++    printProfilesList(options)
++  }
++
++  const auth = getAuthData()
++  printCredentialList(auth, options)
++}
++
++function handleEnhancedAuthSave(args) {
++  if (!isAuthSaveCommand(args)) return false
++  const options = parseSaveOptions(args)
++  saveProfile(options.profileName, options)
++  console.log(`Saved ${options.fromAntigravity ? "Antigravity" : "current"} credentials as profile: ${options.profileName}`)
++  process.exit(0)
++}
++
++function handleEnhancedAuthSwitch(args, resolvedBinary) {
++  if (!isAuthSwitchCommand(args)) return false
++  const options = parseSwitchOptions(args)
++  const result = switchProfile(options.profileName, {
++    family: options.family,
++    promptReason: "Select a profile to switch to:",
++  })
++  console.log(`Switched active credentials to profile: ${result.name}`)
++  if (result.synced?.status === "updated") {
++    console.log(`Synced Antigravity ${result.synced.family} active account to: ${result.synced.email}`)
++  }
++  if (options.restart) {
++    const restarted = restartResolvedBinary(resolvedBinary)
++    console.log(`Restart requested: stopped ${restarted.stopped} Opencode process${restarted.stopped === 1 ? "" : "es"} and launched a fresh session.`)
++  }
++  process.exit(0)
++}
++
++function handleEnhancedAuthProfiles(args) {
++  if (!isAuthProfilesCommand(args)) return false
++  const options = parseProfilesOptions(args)
++  printProfilesList(options)
++}
++
++function handleEnhancedAuthCurrent(args) {
++  if (!isAuthCurrentCommand(args)) return false
++  const options = parseCurrentLikeOptions(args, printEnhancedCurrentHelp)
++  printCurrentStatus(collectStatus(), options.json)
++}
++
++function handleEnhancedAuthDoctor(args) {
++  if (!isAuthDoctorCommand(args)) return false
++  const options = parseCurrentLikeOptions(args, printEnhancedDoctorHelp)
++  printDoctor(collectStatus(), options.json)
++}
++
++function handleEnhancedAuthRepair(args) {
++  if (!isAuthRepairCommand(args)) return false
++  const options = parseCurrentLikeOptions(args, printEnhancedRepairHelp)
++  printRepairResult(repairState(), options.json)
++}
++
++function handleEnhancedAuthRename(args) {
++  if (!isAuthRenameCommand(args)) return false
++  if (args.includes("-h") || args.includes("--help")) {
++    console.log("opencode auth rename <old> <new>")
++    process.exit(0)
++  }
++  renameProfile(args[2], args[3])
++  console.log(`Renamed auth profile ${args[2]} -> ${args[3]}`)
++  process.exit(0)
++}
++
++function handleEnhancedAuthDelete(args) {
++  if (!isAuthDeleteCommand(args)) return false
++  if (args.includes("-h") || args.includes("--help")) {
++    console.log("opencode auth delete <name>")
++    process.exit(0)
++  }
++  deleteProfile(args[2])
++  console.log(`Deleted auth profile: ${args[2]}`)
++  process.exit(0)
++}
++
++function handleEnhancedAuthClone(args) {
++  if (!isAuthCloneCommand(args)) return false
++  if (args.includes("-h") || args.includes("--help")) {
++    console.log("opencode auth clone <src> <dst>")
++    process.exit(0)
++  }
++  cloneProfile(args[2], args[3])
++  console.log(`Cloned auth profile ${args[2]} -> ${args[3]}`)
++  process.exit(0)
++}
++
++function handleCustomAuthCommands(args, resolvedBinary) {
++  if (handleEnhancedAuthRoot(args)) return true
++  if (handleEnhancedAuthList(args, resolvedBinary)) return true
++  if (handleEnhancedAuthSave(args)) return true
++  if (handleEnhancedAuthSwitch(args, resolvedBinary)) return true
++  if (handleEnhancedAuthProfiles(args)) return true
++  if (handleEnhancedAuthCurrent(args)) return true
++  if (handleEnhancedAuthDoctor(args)) return true
++  if (handleEnhancedAuthRepair(args)) return true
++  if (handleEnhancedAuthRename(args)) return true
++  if (handleEnhancedAuthDelete(args)) return true
++  if (handleEnhancedAuthClone(args)) return true
++  return false
++}
++
+ function run(target) {
+   const result = childProcess.spawnSync(target, process.argv.slice(2), {
+     stdio: "inherit",
+@@ -19,15 +1712,18 @@ function run(target) {
+ 
+ const envPath = process.env.OPENCODE_BIN_PATH
+ if (envPath) {
++  handleCustomAuthCommands(process.argv.slice(2), envPath)
++  maybeWarnOnLaunch(process.argv.slice(2))
+   run(envPath)
+ }
+ 
+ const scriptPath = fs.realpathSync(__filename)
+ const scriptDir = path.dirname(scriptPath)
+ 
+-//
+ const cached = path.join(scriptDir, ".opencode")
+ if (fs.existsSync(cached)) {
++  handleCustomAuthCommands(process.argv.slice(2), cached)
++  maybeWarnOnLaunch(process.argv.slice(2))
+   run(cached)
+ }
+ 
+@@ -43,13 +1739,9 @@ const archMap = {
+ }
+ 
+ let platform = platformMap[os.platform()]
+-if (!platform) {
+-  platform = os.platform()
+-}
++if (!platform) platform = os.platform()
+ let arch = archMap[os.arch()]
+-if (!arch) {
+-  arch = os.arch()
+-}
++if (!arch) arch = os.arch()
+ const base = "opencode-" + platform + "-" + arch
+ const binary = platform === "windows" ? "opencode.exe" : "opencode"
+ 
+@@ -78,9 +1770,7 @@ function supportsAvx2() {
+   }
+ 
+   if (platform === "windows") {
+-    const cmd =
+-      '(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)'
+-
++    const cmd = '(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)'
+     for (const exe of ["powershell.exe", "pwsh.exe", "pwsh", "powershell"]) {
+       try {
+         const result = childProcess.spawnSync(exe, ["-NoProfile", "-NonInteractive", "-Command", cmd], {
+@@ -96,7 +1786,6 @@ function supportsAvx2() {
+         continue
+       }
+     }
+-
+     return false
+   }
+ 
+@@ -111,18 +1800,12 @@ const names = (() => {
+     const musl = (() => {
+       try {
+         if (fs.existsSync("/etc/alpine-release")) return true
+-      } catch {
+-        // ignore
+-      }
+-
++      } catch {}
+       try {
+         const result = childProcess.spawnSync("ldd", ["--version"], { encoding: "utf8" })
+         const text = ((result.stdout || "") + (result.stderr || "")).toLowerCase()
+         if (text.includes("musl")) return true
+-      } catch {
+-        // ignore
+-      }
+-
++      } catch {}
+       return false
+     })()
+ 
+@@ -159,9 +1842,7 @@ function findBinary(startDir) {
+       }
+     }
+     const parent = path.dirname(current)
+-    if (parent === current) {
+-      return
+-    }
++    if (parent === current) return undefined
+     current = parent
+   }
+ }
+@@ -176,4 +1857,6 @@ if (!resolved) {
+   process.exit(1)
+ }
+ 
++handleCustomAuthCommands(process.argv.slice(2), resolved)
++maybeWarnOnLaunch(process.argv.slice(2))
+ run(resolved)

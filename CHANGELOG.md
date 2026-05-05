@@ -6,3 +6,7 @@
 - added exact examples for drift-aware listing, switching, doctor, repair, and restart-aware flows
 - added redacted sample state files and outputs
 - added research references for CLI auth UX patterns
+- added a vendored upstream `opencode-ai@1.14.31` launcher for comparison
+- added a sanitized patched launcher artifact with generic Python discovery
+- added a reusable installer/restore script for applying the patch to a real global install
+- added an inspectable unified diff under `patches/`
