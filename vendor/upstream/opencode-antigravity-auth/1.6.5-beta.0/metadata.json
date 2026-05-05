@@ -1,0 +1,20 @@
+{
+  "name": "opencode-antigravity-auth",
+  "version": "1.6.5-beta.0",
+  "author": "noefabris",
+  "repository": "https://github.com/NoeFabris/opencode-antigravity-auth",
+  "license": "MIT",
+  "npmTarball": "https://registry.npmjs.org/opencode-antigravity-auth/-/opencode-antigravity-auth-1.6.5-beta.0.tgz",
+  "verifiedFiles": {
+    "dist/src/plugin.js": {
+      "sha256": "3DA3651908AC2FB8F2FA10F3ABAC83CE75FE0E0142E8AC3BC8A13B70C88A6D04"
+    },
+    "dist/src/plugin/accounts.js": {
+      "sha256": "38949934160F4EE7F37E4D259DC95BD541512B60BD17C3814F9C63E02A3B87EB"
+    }
+  },
+  "notes": [
+    "The installed plugin matched npm upstream for the verified files above.",
+    "This repository patches the launcher, not the plugin package."
+  ]
+}

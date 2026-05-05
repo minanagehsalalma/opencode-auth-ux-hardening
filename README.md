@@ -1,8 +1,17 @@
+![OpenCode Auth UX Hardening](assets/hero.svg)
+
 # Opencode Auth UX Hardening
 
 Sanitized documentation, patch artifacts, and an installer for a multi-store auth UX cleanup around `opencode` plus the `opencode-antigravity-auth` plugin.
 
 This repo includes the exact improvements that were implemented locally to make account switching, drift detection, diagnostics, and runtime behavior much smoother, plus a reusable patch flow for `opencode-ai@1.14.31`.
+
+What is included:
+
+- a real launcher patch for `opencode-ai@1.14.31`
+- a verified companion workflow for `opencode-antigravity-auth@1.6.5-beta.0`
+- redacted examples, diagnostics, and repair flows
+- upstream attribution and official reference links
 
 ## Problem
 
@@ -68,6 +77,21 @@ Review the exact delta before applying:
 - [vendor/upstream/opencode-ai/1.14.31/bin/opencode](vendor/upstream/opencode-ai/1.14.31/bin/opencode)
 - [artifacts/opencode-ai/1.14.31/bin/opencode](artifacts/opencode-ai/1.14.31/bin/opencode)
 
+## Plugin Companion
+
+The Antigravity auth plugin is part of the working setup, but it is not locally code-modified here. The installed package was checked against npm upstream and matched exactly.
+
+Verify the plugin side:
+
+```powershell
+node scripts/verify-antigravity-plugin.mjs
+```
+
+Details:
+
+- [docs/PLUGIN.md](docs/PLUGIN.md)
+- [ATTRIBUTION.md](ATTRIBUTION.md)
+
 Example `auth current` output:
 
 ```text
@@ -92,10 +116,13 @@ note: live Opencode sessions may need restart to pick up account changes.
 ## Repo Layout
 
 - [scripts/apply-opencode-auth-ux-patch.mjs](scripts/apply-opencode-auth-ux-patch.mjs): applies or restores the patched launcher
+- [scripts/verify-antigravity-plugin.mjs](scripts/verify-antigravity-plugin.mjs): verifies the installed Antigravity auth plugin matches the expected upstream package
 - [patches/opencode-ai-1.14.31-auth-ux.patch](patches/opencode-ai-1.14.31-auth-ux.patch): unified diff from upstream `1.14.31` to the patched launcher
 - [vendor/upstream/opencode-ai/1.14.31/bin/opencode](vendor/upstream/opencode-ai/1.14.31/bin/opencode): clean launcher from the npm tarball
 - [artifacts/opencode-ai/1.14.31/bin/opencode](artifacts/opencode-ai/1.14.31/bin/opencode): patched launcher ready to install
 - [docs/APPLY.md](docs/APPLY.md): apply, inspect, and restore instructions
+- [docs/PLUGIN.md](docs/PLUGIN.md): plugin-side verification and scope
+- [ATTRIBUTION.md](ATTRIBUTION.md): creator credit and official references
 - [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md): exact example for each improvement and what it is for
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): store layout, runtime flow, and switching model
 - [docs/RESEARCH.md](docs/RESEARCH.md): external patterns used as a quality check
@@ -124,6 +151,16 @@ The implementation was checked against established patterns from:
 - npm/Homebrew doctor-style diagnostics
 
 Details and links are in [docs/RESEARCH.md](docs/RESEARCH.md).
+
+## Credit
+
+Credit belongs to the upstream OpenCode and Antigravity auth plugin creators. This repo patches the launcher around their existing system and documents the multi-store auth behavior clearly instead of rebranding it as original work.
+
+- OpenCode: https://opencode.ai
+- OpenCode GitHub: https://github.com/opencode-ai/opencode
+- Antigravity auth plugin: https://github.com/NoeFabris/opencode-antigravity-auth
+
+Full attribution is in [ATTRIBUTION.md](ATTRIBUTION.md).
 
 ## License
 

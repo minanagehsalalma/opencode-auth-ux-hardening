@@ -10,3 +10,6 @@
 - added a sanitized patched launcher artifact with generic Python discovery
 - added a reusable installer/restore script for applying the patch to a real global install
 - added an inspectable unified diff under `patches/`
+- added a verified Antigravity plugin companion workflow and upstream hash check
+- added explicit upstream attribution for OpenCode and `opencode-antigravity-auth`
+- added a repo hero image for public presentation
