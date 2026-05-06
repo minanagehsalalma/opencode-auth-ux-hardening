@@ -71,6 +71,19 @@ flowchart TD
   F --> G[Picker renders live-looking state]
 ```
 
+## Smart Launch Routing
+
+The launcher does not fully trust persisted default model state.
+
+For real launches it can:
+
+- read the active Antigravity account
+- derive live versus waiting quota candidates
+- choose the best currently-live primary model
+- inject that model for startup instead of blindly trusting stale session state
+
+Utility commands should not receive that injection. `opencode models` and similar non-launch commands should behave like upstream CLI surfaces.
+
 ## Repair Principle
 
 `opencode auth repair` intentionally fixes only cheap, high-confidence drift:
@@ -89,7 +102,7 @@ A model being temporarily rate-limited is not the same thing as a dead model.
 That is why the smarter picker keeps flash models visible:
 
 - `READY` means the bucket is immediately usable
-- `WAIT` means the bucket or model is cooling down
+- `WAIT model ...` means the exact model path is cooling down
 - a waiting flash model can still be the right favorite once the reset passes
 
 This preserves future availability instead of hiding useful models just because they are temporarily cooling down.

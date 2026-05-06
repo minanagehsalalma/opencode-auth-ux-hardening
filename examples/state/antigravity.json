@@ -9,7 +9,7 @@
   "debug": false,
   "debug_tui": false,
   "quiet_mode": false,
-  "max_rate_limit_wait_seconds": 15,
+  "max_rate_limit_wait_seconds": 90,
   "proactive_token_refresh": true,
   "proactive_refresh_buffer_seconds": 1800,
   "proactive_refresh_check_interval_seconds": 300,

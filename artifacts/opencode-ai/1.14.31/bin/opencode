@@ -34,7 +34,13 @@ const REMOVED_GOOGLE_MODEL_IDS = new Set([
   "antigravity-claude-opus-4-6-thinking",
   "gemini-3.1-pro-preview-customtools",
 ])
-const DEFAULT_MODEL_VARIANTS = {}
+const DEFAULT_MODEL_VARIANTS = {
+  "google/antigravity-gemini-3.1-pro": "low",
+  "google/gemini-3.1-pro-preview": "low",
+  "google/antigravity-gemini-3-flash": "minimal",
+  "google/gemini-3-flash-preview": "minimal",
+  "google/gemini-2.5-flash": "minimal",
+}
 const QUOTA_DISPLAY_NAME_OVERRIDES = {
   "antigravity-claude-sonnet-4-6": "Claude Sonnet 4.6 (Antigravity)",
   "antigravity-gemini-3.1-pro": "Gemini 3.1 Pro (Antigravity)",
@@ -43,6 +49,7 @@ const QUOTA_DISPLAY_NAME_OVERRIDES = {
   "gemini-3-flash-preview": "Gemini 3 Flash Preview",
   "gemini-2.5-flash": "Gemini 2.5 Flash",
 }
+const PREFERRED_DEFAULT_MODEL = "google/antigravity-claude-sonnet-4-6"
 const SAFE_SMALL_MODEL = "opencode/gpt-5-nano"
 const DYNAMIC_GATEWAY_PROVIDER_ID = "glm-gateway"
 const WORKING_GOOGLE_MODEL_IDS = [
@@ -178,6 +185,10 @@ function getModelStatePath() {
   return path.join(os.homedir(), ".local", "state", "opencode", "model.json")
 }
 
+function getLiveRefreshLockPath() {
+  return path.join(os.homedir(), ".local", "state", "opencode", "live-model-refresh.lock.json")
+}
+
 function getPythonLaunchers() {
   const unique = []
   for (const candidate of PYTHON_CANDIDATES) {
@@ -290,10 +301,19 @@ function readJsonFile(filePath, fallback) {
 
 function writeJsonFile(filePath, value) {
   ensureDirectory(path.dirname(filePath))
+  const nextContent = `${JSON.stringify(value, null, 2)}\n`
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8")
-  fs.rmSync(filePath, { force: true })
-  fs.renameSync(tempPath, filePath)
+  fs.writeFileSync(tempPath, nextContent, "utf8")
+  try {
+    fs.rmSync(filePath, { force: true })
+    fs.renameSync(tempPath, filePath)
+  } catch {
+    try {
+      fs.writeFileSync(filePath, nextContent, "utf8")
+    } finally {
+      fs.rmSync(tempPath, { force: true })
+    }
+  }
 }
 
 function getModelState() {
@@ -310,6 +330,50 @@ function getModelState() {
 
 function writeModelState(value) {
   writeJsonFile(getModelStatePath(), value)
+}
+
+function isProcessRunning(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function readLiveRefreshLock() {
+  const lockPath = getLiveRefreshLockPath()
+  if (!fs.existsSync(lockPath)) return null
+  try {
+    const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"))
+    return lock && typeof lock === "object" ? lock : null
+  } catch {
+    return null
+  }
+}
+
+function hasActiveLiveRefreshLock() {
+  const lock = readLiveRefreshLock()
+  return Boolean(lock && isProcessRunning(lock.pid))
+}
+
+function claimLiveRefreshLock() {
+  const current = readLiveRefreshLock()
+  if (current && isProcessRunning(current.pid) && current.pid !== process.pid) {
+    return false
+  }
+  writeJsonFile(getLiveRefreshLockPath(), {
+    pid: process.pid,
+    claimedAt: Date.now(),
+  })
+  return true
+}
+
+function releaseLiveRefreshLock() {
+  const current = readLiveRefreshLock()
+  if (current?.pid && current.pid !== process.pid) return
+  fs.rmSync(getLiveRefreshLockPath(), { force: true })
 }
 
 function getAuthData() {
@@ -478,14 +542,17 @@ function getQuotaDisplayLabel(account, candidate) {
 
   const resetAt = getQuotaCandidateResetAt(account, candidate, Date.now())
   if (status === "wait" && resetAt) {
-    return `[WAIT ${percent} ${formatDuration(resetAt - Date.now())}]`
+    if (typeof remaining === "number" && Number.isFinite(remaining) && remaining <= 0) {
+      return `[WAIT model ${formatDuration(resetAt - Date.now())} | bucket empty]`
+    }
+    return `[WAIT model ${formatDuration(resetAt - Date.now())}]`
   }
 
   if (status === "dry") {
-    return `[DRY ${percent}]`
+    return `[DRY bucket ${percent}]`
   }
 
-  return `[READY ${percent}]`
+  return `[READY bucket ${percent}]`
 }
 
 function pruneRemovedQuotaDisplayModels(models) {
@@ -600,6 +667,20 @@ function hasProviderModel(config, candidate) {
   return Boolean(models && typeof models === "object" && models[candidate.modelID])
 }
 
+function getQualifiedModelID(candidate) {
+  return `${candidate.providerID}/${candidate.modelID}`
+}
+
+function parseQualifiedModelID(value) {
+  if (!value || typeof value !== "string") return null
+  const slashIndex = value.indexOf("/")
+  if (slashIndex <= 0 || slashIndex === value.length - 1) return null
+  return {
+    providerID: value.slice(0, slashIndex),
+    modelID: value.slice(slashIndex + 1),
+  }
+}
+
 function dedupeModelRefs(entries) {
   const seen = new Set()
   const result = []
@@ -671,9 +752,6 @@ function syncStableModelPreferences() {
     }
 
     configChanged = ensureNonQuotaDisplayModels(config) || configChanged
-    if (configChanged) {
-      writeJsonFile(getOpencodeConfigPath(), config)
-    }
 
     const state = getModelState()
     const filteredRecent = filterAvailableModelRefs(stripRemovedModelRefs(state.recent), config)
@@ -689,8 +767,36 @@ function syncStableModelPreferences() {
       stateChanged = true
     }
 
+    const auth = getAuthData()
+    const authEmail = getPrimaryAuthEmail(auth)
+    const matchedAccount = getAntigravityAccountByEmail(authEmail)?.account
+      ?? getActiveAntigravityAccountForFamily("gemini")?.account
+    const preferredModel = getPreferredPrimaryModel(matchedAccount, config)
+    if (preferredModel && config.model !== preferredModel) {
+      config.model = preferredModel
+      configChanged = true
+    } else if (!config.model && PREFERRED_DEFAULT_MODEL) {
+      config.model = PREFERRED_DEFAULT_MODEL
+      configChanged = true
+    }
+
+    const preferredRecentEntry = parseQualifiedModelID(preferredModel || config.model || PREFERRED_DEFAULT_MODEL)
+    if (preferredRecentEntry) {
+      const nextRecent = dedupeModelRefs([
+        preferredRecentEntry,
+        ...state.recent,
+      ]).slice(0, 10)
+      if (JSON.stringify(nextRecent) !== JSON.stringify(state.recent)) {
+        state.recent = nextRecent
+        stateChanged = true
+      }
+    }
+
     if (stateChanged) {
       writeModelState(state)
+    }
+    if (configChanged) {
+      writeJsonFile(getOpencodeConfigPath(), config)
     }
   } catch {
     // Never block launch if the stable model preferences cannot be refreshed.
@@ -738,6 +844,21 @@ function getPreferredFavorites(account, config) {
   return dedupeModelRefs(favorites.map(({ providerID, modelID }) => ({ providerID, modelID })))
 }
 
+function getPreferredPrimaryModel(account, config) {
+  const quotaCandidates = getQuotaFavoriteEntries(account).filter((candidate) => hasProviderModel(config, candidate))
+  const bestQuotaCandidate = quotaCandidates.find((candidate) => candidate.status === "live")
+  if (bestQuotaCandidate) {
+    return getQualifiedModelID(bestQuotaCandidate)
+  }
+
+  const bestStaticCandidate = STATIC_FAVORITE_CANDIDATES.find((candidate) => hasProviderModel(config, candidate))
+  if (bestStaticCandidate) {
+    return getQualifiedModelID(bestStaticCandidate)
+  }
+
+  return PREFERRED_DEFAULT_MODEL
+}
+
 function syncQuotaEligibleFavorites() {
   try {
     const auth = getAuthData()
@@ -777,6 +898,11 @@ function syncQuotaDisplayNames() {
 
     let changed = ensureNonQuotaDisplayModels(config)
     changed = ensureQuotaDisplayModels(models) || changed
+    const preferredModel = getPreferredPrimaryModel(matchedAccount, config)
+    if (preferredModel && config.model !== preferredModel) {
+      config.model = preferredModel
+      changed = true
+    }
     for (const candidate of QUOTA_FAVORITE_CANDIDATES) {
       const model = models[candidate.modelID]
       if (!model || typeof model !== "object") continue
@@ -805,6 +931,7 @@ function refreshSmartModelState() {
 
 function startLiveRefreshDaemon(args) {
   if (!shouldStartLiveRefreshDaemon(args)) return
+  if (hasActiveLiveRefreshLock()) return
   try {
     const child = childProcess.spawn(process.execPath, [__filename, LIVE_REFRESH_ARG], {
       detached: true,
@@ -822,6 +949,9 @@ function startLiveRefreshDaemon(args) {
 }
 
 function runLiveRefreshDaemon() {
+  if (!claimLiveRefreshLock()) {
+    process.exit(0)
+  }
   const startedAt = Date.now()
   const refresh = () => {
     try {
@@ -830,10 +960,20 @@ function runLiveRefreshDaemon() {
       // keep the daemon alive even if a single refresh fails
     }
     if (Date.now() - startedAt >= LIVE_REFRESH_MAX_MS) {
+      releaseLiveRefreshLock()
       process.exit(0)
     }
   }
 
+  process.on("exit", releaseLiveRefreshLock)
+  process.on("SIGTERM", () => {
+    releaseLiveRefreshLock()
+    process.exit(0)
+  })
+  process.on("SIGINT", () => {
+    releaseLiveRefreshLock()
+    process.exit(0)
+  })
   refresh()
   setInterval(refresh, LIVE_REFRESH_INTERVAL_MS)
 }
@@ -2330,10 +2470,51 @@ function hasVariantArg(args) {
   return args.some((arg) => arg === "--variant" || arg.startsWith("--variant="))
 }
 
+function isRunCommandArgs(args) {
+  return Array.isArray(args) && args[0] === "run"
+}
+
+function shouldInjectSmartModel(args) {
+  if (!Array.isArray(args) || args.length === 0) return true
+  const primary = args[0]
+  if (!primary) return true
+  return primary === "run" || primary.startsWith("-")
+}
+
+function resolveSmartLaunchModel() {
+  try {
+    const config = readJsonFile(getOpencodeConfigPath(), {})
+    const auth = getAuthData()
+    const authEmail = getPrimaryAuthEmail(auth)
+    const matchedAccount = getAntigravityAccountByEmail(authEmail)?.account
+      ?? getActiveAntigravityAccountForFamily("gemini")?.account
+    const preferredModel = getPreferredPrimaryModel(matchedAccount, config)
+    return preferredModel || config.model || PREFERRED_DEFAULT_MODEL
+  } catch {
+    return null
+  }
+}
+
 function getLaunchArgs(args) {
   const nextArgs = [...args]
-  const requestedModel = getRequestedModelArg(nextArgs)
-  if (!requestedModel || hasVariantArg(nextArgs)) {
+  const isRunCommand = isRunCommandArgs(nextArgs)
+  let requestedModel = getRequestedModelArg(nextArgs)
+  if (!requestedModel && shouldInjectSmartModel(nextArgs)) {
+    const smartModel = resolveSmartLaunchModel()
+    if (smartModel) {
+      if (isRunCommand) {
+        nextArgs.splice(1, 0, "--model", smartModel)
+        requestedModel = {
+          model: smartModel,
+          insertIndex: 3,
+        }
+      } else {
+        nextArgs.push("--model", smartModel)
+      }
+    }
+  }
+
+  if (!requestedModel || !isRunCommand || hasVariantArg(nextArgs)) {
     return nextArgs
   }
 
@@ -2350,6 +2531,11 @@ function run(target) {
   const result = childProcess.spawnSync(target, getLaunchArgs(process.argv.slice(2)), {
     stdio: "inherit",
   })
+  try {
+    refreshSmartModelState()
+  } catch {
+    // Never block command exit on post-run state refresh.
+  }
   if (result.error) {
     console.error(result.error.message)
     process.exit(1)

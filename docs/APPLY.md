@@ -19,11 +19,12 @@ The published launcher artifact adds two layers of behavior:
 
 2. Model-picker hardening
    - Google model allowlist and dead-model blacklist
-   - quota-aware `READY` and cooldown-aware `WAIT` labels
+   - bucket-aware `READY` and exact-cooldown `WAIT model ...` labels
    - flash-model surfacing even while waiting for reset
    - GLM and free fallback labeling
    - local gateway live/offline labeling
    - automatic `small_model` steering to a safe fallback
+   - startup-time smart model selection that routes away from long-cooldown defaults
    - model favorites rewritten from live state
    - a background refresh loop for interactive sessions
 
@@ -67,6 +68,12 @@ Interactive verification:
 2. relaunch `opencode`
 3. open the model picker
 4. confirm the picker shows `READY`, `WAIT`, `FREE GLM`, `FREE FAST`, or `LOCAL OFFLINE` labels
+
+Important nuance:
+
+- utility commands like `opencode models` should remain untouched
+- smart model injection should apply only to real launches
+- default variant injection should apply only to `opencode run`
 
 The refresh loop runs only for interactive launches. CLI-only commands do not need a long-lived background refresher.
 

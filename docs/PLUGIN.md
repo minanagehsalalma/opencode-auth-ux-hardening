@@ -68,8 +68,8 @@ The notable settings are:
 - `auto_update: true`
   - keep plugin metadata and behavior current
 
-- `max_rate_limit_wait_seconds: 15`
-  - do not waste long waits when the launcher already surfaces better fallbacks
+- `max_rate_limit_wait_seconds: 90`
+  - allow short quota resets to self-recover instead of failing immediately, while still avoiding absurd waits
 
 - `proactive_token_refresh: true`
   - refresh ahead of failure when possible
@@ -92,13 +92,13 @@ That behavior depends on plugin-owned metadata:
 If the plugin account store says a flash path is cooling down, the picker can show:
 
 ```text
-[WAIT 20% 6d 19h] Gemini 3 Flash Preview
+[WAIT model 6d 18h] Gemini 3 Flash Preview
 ```
 
 If the cooldown clears and quota remains, the picker can promote it back to:
 
 ```text
-[READY 20%] Gemini 2.5 Flash
+[READY bucket 100%] Gemini 2.5 Flash
 ```
 
 The public repo documents that state model, but it does not ship any real account data.

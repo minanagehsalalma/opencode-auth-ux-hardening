@@ -252,12 +252,12 @@ Example:
 ```text
 Favorites
 
-• [READY 100%] Claude Sonnet 4.6 (Antigravity) Google
-  [READY 100%] Gemini 3.1 Pro (Antigravity) Google
-  [READY 100%] Gemini 3.1 Pro Google
-  [WAIT 20% 6d 19h] Gemini 3 Flash (Antigravity) Google
-  [WAIT 20% 6d 19h] Gemini 3 Flash Preview Google
-  [READY 20%] Gemini 2.5 Flash Google
+• [READY bucket 20%] Gemini 3.1 Pro (Antigravity) Google
+  [READY bucket 20%] Gemini 3.1 Pro Google
+  [READY bucket 100%] Gemini 2.5 Flash Google
+  [WAIT model 6d 18h] Claude Sonnet 4.6 (Antigravity) Google
+  [WAIT model 6d 18h] Gemini 3 Flash (Antigravity) Google
+  [WAIT model 6d 18h] Gemini 3 Flash Preview Google
   [FREE GLM] GLM-5.1 (NVIDIA NIM)
   [FREE GLM] GLM-5.1 (Puter)
   [FREE FAST] GPT-5 Nano
@@ -277,9 +277,9 @@ Why it matters:
 Example labels:
 
 ```text
-[WAIT 20% 6d 19h] Gemini 3 Flash Preview
-[WAIT 20% 6d 19h] Gemini 3 Flash (Antigravity)
-[READY 20%] Gemini 2.5 Flash
+[WAIT model 6d 18h] Gemini 3 Flash Preview
+[WAIT model 6d 18h] Gemini 3 Flash (Antigravity)
+[READY bucket 100%] Gemini 2.5 Flash
 ```
 
 ## 13. Self-Updating Interactive Refresh
@@ -317,7 +317,25 @@ small_model: opencode/gpt-5-nano
 fallbacks: glm-nvidia/glm-5.1, glm-puter/glm-5.1, opencode/minimax-m2.5-free
 ```
 
-## 15. Local Gateway Offline Awareness
+## 15. Smart Launch Routing
+
+What for:
+Stop stale session defaults from forcing a cooling-down model on the next launch.
+
+Behavior:
+
+- if the user does not explicitly pass `-m`, the launcher computes the best live model from current quota state
+- `opencode run` gets smart model plus safe default variant injection
+- interactive or session-resume launches get smart model injection without forced variant args
+- utility commands such as `opencode models` stay untouched
+
+Practical result:
+
+```text
+Claude can remain visible as WAIT, but a fresh launch should route to a live Gemini model instead of dying on Claude first.
+```
+
+## 16. Local Gateway Offline Awareness
 
 What for:
 Stop presenting a dead local gateway as if it were a ready model.
@@ -330,7 +348,7 @@ Example:
 
 When the gateway comes back, the same slot can be labeled live again.
 
-## 16. Plugin Runtime Companion
+## 17. Plugin Runtime Companion
 
 What for:
 Make the plugin behave sanely with the launcher's smarter auth and picker logic.
@@ -352,7 +370,7 @@ Example:
   "switch_on_first_rate_limit": true,
   "session_recovery": true,
   "auto_update": true,
-  "max_rate_limit_wait_seconds": 15,
+  "max_rate_limit_wait_seconds": 90,
   "proactive_token_refresh": true
 }
 ```

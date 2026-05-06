@@ -9,7 +9,7 @@ This repo now covers two connected UX problems:
 - multi-store auth drift between `auth.json`, saved profiles, plugin state, and live runtime
 - a static model picker that does not reflect real quota, cooldowns, or fallback readiness
 
-The published patch keeps the auth tooling, then layers on a smarter picker that can surface quota-aware Google models, flash cooldown state, GLM fallbacks, and local gateway status without shipping any private tokens or machine-specific state.
+The published patch keeps the auth tooling, then layers on a smarter picker that can surface quota-aware Google models, flash cooldown state, GLM fallbacks, and local gateway status without shipping any private tokens or machine-specific state. It also routes fresh launches toward the best currently-live model instead of blindly trusting stale session defaults.
 
 ## What Is Included
 
@@ -43,7 +43,8 @@ The fix was to treat both auth and model choice as stateful systems, make those 
 | Interactive switching | Switches profiles by picker instead of forcing memorized names | `opencode auth switch` |
 | Restart-aware runtime handling | Makes live rebinding explicit with `--restart` | `opencode auth switch personal --restart` |
 | Smart model picker | Rewrites surfaced labels and favorites from real quota state | interactive `opencode` picker |
-| Flash cooldown surfacing | Keeps flash models visible with `WAIT` labels until quota resets | `[WAIT 20% 6d 19h] Gemini 3 Flash Preview` |
+| Flash cooldown surfacing | Keeps flash models visible with exact model-cooldown labels until quota resets | `[WAIT model 6d 18h] Gemini 3 Flash Preview` |
+| Smart launch routing | Computes the best live launch model instead of trusting stale session state | default `opencode` / `opencode run` |
 | GLM and free fallback routing | Promotes free or non-Google paths when they are the best escape hatch | `glm-nvidia/glm-5.1`, `glm-puter/glm-5.1`, `opencode/gpt-5-nano` |
 | Gateway status labeling | Marks local gateway models as live or offline instead of pretending they work | `[LOCAL OFFLINE] GLM-5.1 (Gateway)` |
 | Plugin companion config | Tunes plugin runtime behavior to fit the launcher's smarter state model | `examples/state/antigravity.json` |
@@ -64,12 +65,12 @@ Picker state:
 ```text
 Favorites
 
-• [READY 100%] Claude Sonnet 4.6 (Antigravity) Google
-  [READY 100%] Gemini 3.1 Pro (Antigravity) Google
-  [READY 100%] Gemini 3.1 Pro Google
-  [WAIT 20% 6d 19h] Gemini 3 Flash (Antigravity) Google
-  [WAIT 20% 6d 19h] Gemini 3 Flash Preview Google
-  [READY 20%] Gemini 2.5 Flash Google
+• [READY bucket 20%] Gemini 3.1 Pro (Antigravity) Google
+  [READY bucket 20%] Gemini 3.1 Pro Google
+  [READY bucket 100%] Gemini 2.5 Flash Google
+  [WAIT model 6d 18h] Claude Sonnet 4.6 (Antigravity) Google
+  [WAIT model 6d 18h] Gemini 3 Flash (Antigravity) Google
+  [WAIT model 6d 18h] Gemini 3 Flash Preview Google
   [FREE GLM] GLM-5.1 (NVIDIA NIM)
   [FREE GLM] GLM-5.1 (Puter)
   [FREE FAST] GPT-5 Nano
