@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/NoeFabris/opencode-antigravity-auth/main/assets/antigravity.schema.json",
+  "account_selection_strategy": "sticky",
+  "pid_offset_enabled": false,
+  "switch_on_first_rate_limit": true,
+  "session_recovery": true,
+  "auto_resume": false,
+  "auto_update": true,
+  "debug": false,
+  "debug_tui": false,
+  "quiet_mode": false,
+  "max_rate_limit_wait_seconds": 15,
+  "proactive_token_refresh": true,
+  "proactive_refresh_buffer_seconds": 1800,
+  "proactive_refresh_check_interval_seconds": 300,
+  "empty_response_max_attempts": 4,
+  "empty_response_retry_delay_ms": 2000,
+  "tool_id_recovery": true,
+  "claude_tool_hardening": true
+}

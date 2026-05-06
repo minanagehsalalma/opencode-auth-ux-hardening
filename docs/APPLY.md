@@ -4,19 +4,30 @@ This repo includes a reusable patch flow for `opencode-ai@1.14.31`.
 
 ## What It Changes
 
-The patch replaces the installed `bin/opencode` launcher with a version that adds:
+The published launcher artifact adds two layers of behavior:
 
-- richer `auth list`
-- interactive `auth switch`
-- profile save, clone, rename, and delete
-- `auth current`
-- `auth doctor`
-- `auth repair`
-- Antigravity-aware syncing
-- launch-time drift warnings
-- explicit `--restart` handling
+1. Auth hardening
+   - richer `auth list`
+   - interactive `auth switch`
+   - profile save, clone, rename, and delete
+   - `auth current`
+   - `auth doctor`
+   - `auth repair`
+   - Antigravity-aware syncing
+   - launch-time drift warnings
+   - explicit `--restart` handling
 
-The published artifact is sanitized and uses generic Python discovery for session inspection instead of a machine-specific path.
+2. Model-picker hardening
+   - Google model allowlist and dead-model blacklist
+   - quota-aware `READY` and cooldown-aware `WAIT` labels
+   - flash-model surfacing even while waiting for reset
+   - GLM and free fallback labeling
+   - local gateway live/offline labeling
+   - automatic `small_model` steering to a safe fallback
+   - model favorites rewritten from live state
+   - a background refresh loop for interactive sessions
+
+The repo artifact is sanitized and uses generic Python discovery for runtime inspection instead of a machine-specific path.
 
 ## Apply
 
@@ -39,6 +50,25 @@ These files show the exact delta:
 - `patches/opencode-ai-1.14.31-auth-ux.patch`
 - `vendor/upstream/opencode-ai/1.14.31/bin/opencode`
 - `artifacts/opencode-ai/1.14.31/bin/opencode`
+
+## Verify After Applying
+
+Useful checks:
+
+```powershell
+opencode auth current
+opencode auth doctor
+opencode models
+```
+
+Interactive verification:
+
+1. close any already-running `opencode` session
+2. relaunch `opencode`
+3. open the model picker
+4. confirm the picker shows `READY`, `WAIT`, `FREE GLM`, `FREE FAST`, or `LOCAL OFFLINE` labels
+
+The refresh loop runs only for interactive launches. CLI-only commands do not need a long-lived background refresher.
 
 ## Restore
 
@@ -64,4 +94,4 @@ If you want to override that:
 node scripts/apply-opencode-auth-ux-patch.mjs --force
 ```
 
-That disables the version safety check, so review the patch first.
+That disables the version safety check, so inspect the diff first.

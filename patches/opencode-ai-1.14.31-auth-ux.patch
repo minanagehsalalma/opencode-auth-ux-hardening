@@ -1,14 +1,18 @@
 diff --git a/vendor/upstream/opencode-ai/1.14.31/bin/opencode b/artifacts/opencode-ai/1.14.31/bin/opencode
-index a7674ce..04facd7 100644
+index a7674ce..822a378 100644
 --- a/vendor/upstream/opencode-ai/1.14.31/bin/opencode
 +++ b/artifacts/opencode-ai/1.14.31/bin/opencode
-@@ -5,6 +5,1699 @@ const fs = require("fs")
+@@ -5,8 +5,2349 @@ const fs = require("fs")
  const path = require("path")
  const os = require("os")
  
 +const INTERACTIVE_SWITCH = "__INTERACTIVE_SWITCH__"
 +const DEFAULT_FAMILY = "gemini"
 +const RESTART_DELAY_MS = 600
++const LIVE_REFRESH_ENV = "OPENCODE_LIVE_MODEL_REFRESH"
++const LIVE_REFRESH_ARG = "__live_model_refresh__"
++const LIVE_REFRESH_INTERVAL_MS = 60 * 1000
++const LIVE_REFRESH_MAX_MS = 6 * 60 * 60 * 1000
 +const PYTHON_CANDIDATES = process.platform === "win32"
 +  ? [
 +      process.env.OPENCODE_AUTH_PYTHON || "",
@@ -25,6 +29,75 @@ index a7674ce..04facd7 100644
 +    ]
 +
 +let cachedPythonLauncher
++const REMOVED_GOOGLE_MODEL_IDS = new Set([
++  "gemini-3-pro-preview",
++  "antigravity-gemini-3-pro",
++  "antigravity-claude-opus-4-6-thinking",
++  "gemini-3.1-pro-preview-customtools",
++])
++const DEFAULT_MODEL_VARIANTS = {}
++const QUOTA_DISPLAY_NAME_OVERRIDES = {
++  "antigravity-claude-sonnet-4-6": "Claude Sonnet 4.6 (Antigravity)",
++  "antigravity-gemini-3.1-pro": "Gemini 3.1 Pro (Antigravity)",
++  "gemini-3.1-pro-preview": "Gemini 3.1 Pro",
++  "antigravity-gemini-3-flash": "Gemini 3 Flash (Antigravity)",
++  "gemini-3-flash-preview": "Gemini 3 Flash Preview",
++  "gemini-2.5-flash": "Gemini 2.5 Flash",
++}
++const SAFE_SMALL_MODEL = "opencode/gpt-5-nano"
++const DYNAMIC_GATEWAY_PROVIDER_ID = "glm-gateway"
++const WORKING_GOOGLE_MODEL_IDS = [
++  "antigravity-claude-sonnet-4-6",
++  "antigravity-gemini-3.1-pro",
++  "gemini-3.1-pro-preview",
++  "antigravity-gemini-3-flash",
++  "gemini-3-flash-preview",
++  "gemini-2.5-flash",
++]
++const QUOTA_FAVORITE_CANDIDATES = [
++  { providerID: "google", modelID: "antigravity-claude-sonnet-4-6", bucket: "claude" },
++  { providerID: "google", modelID: "antigravity-gemini-3.1-pro", bucket: "gemini-pro" },
++  { providerID: "google", modelID: "gemini-3.1-pro-preview", bucket: "gemini-pro" },
++  { providerID: "google", modelID: "antigravity-gemini-3-flash", bucket: "gemini-flash" },
++  { providerID: "google", modelID: "gemini-3-flash-preview", bucket: "gemini-flash" },
++  { providerID: "google", modelID: "gemini-2.5-flash", bucket: "gemini-flash" },
++]
++const STATIC_FAVORITE_CANDIDATES = [
++  { providerID: "glm-puter", modelID: "glm-5.1" },
++  { providerID: "glm-nvidia", modelID: "glm-5.1" },
++  { providerID: "opencode", modelID: "gpt-5-nano" },
++  { providerID: "opencode", modelID: "minimax-m2.5-free" },
++]
++const FLASH_MODEL_TEMPLATE = {
++  limit: {
++    context: 1048576,
++    output: 65536,
++  },
++  modalities: {
++    input: [
++      "text",
++      "image",
++      "pdf",
++    ],
++    output: [
++      "text",
++    ],
++  },
++  variants: {
++    minimal: {
++      thinkingLevel: "minimal",
++    },
++    low: {
++      thinkingLevel: "low",
++    },
++    medium: {
++      thinkingLevel: "medium",
++    },
++    high: {
++      thinkingLevel: "high",
++    },
++  },
++}
 +
 +function isAuthRoot(value) {
 +  return value === "auth" || value === "providers"
@@ -96,6 +169,14 @@ index a7674ce..04facd7 100644
 +
 +function getOpencodeDbPath() {
 +  return path.join(getOpencodeHome(), "opencode.db")
++}
++
++function getOpencodeConfigPath() {
++  return path.join(os.homedir(), ".config", "opencode", "opencode.json")
++}
++
++function getModelStatePath() {
++  return path.join(os.homedir(), ".local", "state", "opencode", "model.json")
 +}
 +
 +function getPythonLaunchers() {
@@ -216,6 +297,22 @@ index a7674ce..04facd7 100644
 +  fs.renameSync(tempPath, filePath)
 +}
 +
++function getModelState() {
++  const state = readJsonFile(getModelStatePath(), {
++    recent: [],
++    favorite: [],
++    variant: {},
++  })
++  if (!Array.isArray(state.recent)) state.recent = []
++  if (!Array.isArray(state.favorite)) state.favorite = []
++  if (!state.variant || typeof state.variant !== "object") state.variant = {}
++  return state
++}
++
++function writeModelState(value) {
++  writeJsonFile(getModelStatePath(), value)
++}
++
 +function getAuthData() {
 +  const authPath = getAuthPath()
 +  if (!fs.existsSync(authPath)) {
@@ -277,6 +374,469 @@ index a7674ce..04facd7 100644
 +    return null
 +  }
 +  return readJsonFile(filePath)
++}
++
++function getResetTimestamp(value) {
++  if (typeof value === "number" && Number.isFinite(value)) return value
++  if (typeof value === "string" && value.trim()) {
++    const parsed = Number(value)
++    if (Number.isFinite(parsed)) return parsed
++  }
++  return null
++}
++
++function stripQuotaDisplayPrefix(name) {
++  return String(name || "").replace(/^\[[^\]]+\]\s+/, "")
++}
++
++function isLiveRefreshDaemon() {
++  return process.env[LIVE_REFRESH_ENV] === "1" || process.argv.includes(LIVE_REFRESH_ARG)
++}
++
++function isInteractiveLaunch(args) {
++  if (!Array.isArray(args) || args.length === 0) return true
++  const primary = args[0]
++  if (!primary) return true
++  if (["-h", "--help", "-v", "--version"].includes(primary)) return false
++  if (["run", "models", "auth", "providers"].includes(primary)) return false
++  return true
++}
++
++function shouldStartLiveRefreshDaemon(args) {
++  return !isLiveRefreshDaemon() && isInteractiveLaunch(args)
++}
++
++function isLocalGatewayReachable() {
++  try {
++    const probe = [
++      "const net=require('net')",
++      "const socket=net.createConnection({host:'127.0.0.1',port:8080})",
++      "socket.setTimeout(800)",
++      "socket.on('connect',()=>{socket.end();process.exit(0)})",
++      "socket.on('timeout',()=>{socket.destroy();process.exit(1)})",
++      "socket.on('error',()=>process.exit(1))",
++    ].join(";")
++    const result = childProcess.spawnSync(process.execPath, ["-e", probe], {
++      windowsHide: true,
++      timeout: 1500,
++    })
++    return result.status === 0 && !result.error
++  } catch {
++    return false
++  }
++}
++
++function isQuotaBucketAvailable(account, bucket) {
++  const remaining = account?.cachedQuota?.[bucket]?.remainingFraction
++  return typeof remaining === "number" && Number.isFinite(remaining) && remaining > 0
++}
++
++function getQuotaCandidateResetAt(account, candidate, now) {
++  if (!account?.rateLimitResetTimes || typeof account.rateLimitResetTimes !== "object") {
++    return null
++  }
++
++  const keys = candidate.bucket === "claude"
++    ? ["claude"]
++    : [`gemini-cli:${candidate.modelID}`, `gemini-antigravity:${candidate.modelID}`]
++
++  let latest = null
++  for (const key of keys) {
++    const resetAt = getResetTimestamp(account.rateLimitResetTimes[key])
++    if (typeof resetAt !== "number" || resetAt <= now) continue
++    if (latest === null || resetAt > latest) latest = resetAt
++  }
++  return latest
++}
++
++function isQuotaCandidateCoolingDown(account, candidate, now) {
++  return getQuotaCandidateResetAt(account, candidate, now) !== null
++}
++
++function getQuotaCandidateStatus(account, candidate) {
++  if (!account?.enabled) return "off"
++  if (account?.verificationRequired) return "blocked"
++
++  const now = Date.now()
++  const hasQuota = isQuotaBucketAvailable(account, candidate.bucket)
++  const resetAt = getQuotaCandidateResetAt(account, candidate, now)
++
++  if (hasQuota && !resetAt) return "live"
++  if (resetAt) return "wait"
++  if (hasQuota) return "live"
++  return "dry"
++}
++
++function getQuotaDisplayLabel(account, candidate) {
++  const status = getQuotaCandidateStatus(account, candidate)
++  if (status === "off") return "[OFF]"
++  if (status === "blocked") return "[BLOCKED]"
++
++  const remaining = account?.cachedQuota?.[candidate.bucket]?.remainingFraction
++  const percent = typeof remaining === "number" && Number.isFinite(remaining)
++    ? formatPercent(remaining)
++    : "n/a"
++
++  const resetAt = getQuotaCandidateResetAt(account, candidate, Date.now())
++  if (status === "wait" && resetAt) {
++    return `[WAIT ${percent} ${formatDuration(resetAt - Date.now())}]`
++  }
++
++  if (status === "dry") {
++    return `[DRY ${percent}]`
++  }
++
++  return `[READY ${percent}]`
++}
++
++function pruneRemovedQuotaDisplayModels(models) {
++  let changed = false
++  for (const modelID of REMOVED_GOOGLE_MODEL_IDS) {
++    if (!models[modelID]) continue
++    delete models[modelID]
++    changed = true
++  }
++  return changed
++}
++
++function ensureQuotaDisplayModels(models) {
++  let changed = pruneRemovedQuotaDisplayModels(models)
++
++  if (!models["gemini-2.5-flash"]) {
++    models["gemini-2.5-flash"] = {
++      name: QUOTA_DISPLAY_NAME_OVERRIDES["gemini-2.5-flash"],
++      ...deepClone(FLASH_MODEL_TEMPLATE),
++    }
++    changed = true
++  }
++
++  if (!models["gemini-3-flash-preview"]) {
++    models["gemini-3-flash-preview"] = {
++      name: QUOTA_DISPLAY_NAME_OVERRIDES["gemini-3-flash-preview"],
++      ...deepClone(FLASH_MODEL_TEMPLATE),
++    }
++    changed = true
++  }
++
++  if (!models["antigravity-gemini-3-flash"]) {
++    models["antigravity-gemini-3-flash"] = {
++      name: QUOTA_DISPLAY_NAME_OVERRIDES["antigravity-gemini-3-flash"],
++      ...deepClone(FLASH_MODEL_TEMPLATE),
++    }
++    changed = true
++  }
++
++  return changed
++}
++
++function ensureNonQuotaDisplayModels(config) {
++  let changed = false
++  const opencodeNames = {
++    "big-pickle": "[FREE ALT] Big Pickle",
++    "gpt-5-nano": "[FREE FAST] GPT-5 Nano",
++    "hy3-preview-free": "[FREE ALT] Hy3 Preview",
++    "minimax-m2.5-free": "[FREE FAST] MiniMax M2.5 Free",
++    "nemotron-3-super-free": "[FREE ALT] Nemotron 3 Super",
++  }
++
++  if (!config.provider || typeof config.provider !== "object") {
++    config.provider = {}
++    changed = true
++  }
++
++  if (!config.provider.opencode || typeof config.provider.opencode !== "object") {
++    config.provider.opencode = {}
++    changed = true
++  }
++  if (!config.provider.opencode.models || typeof config.provider.opencode.models !== "object") {
++    config.provider.opencode.models = {}
++    changed = true
++  }
++  for (const [modelID, name] of Object.entries(opencodeNames)) {
++    if (!config.provider.opencode.models[modelID]) {
++      config.provider.opencode.models[modelID] = {}
++      changed = true
++    }
++    if (config.provider.opencode.models[modelID].name !== name) {
++      config.provider.opencode.models[modelID].name = name
++      changed = true
++    }
++  }
++
++  if (config.provider["glm-gateway"]?.models?.["glm-5.1"]) {
++    const gatewayName = isLocalGatewayReachable() ? "[LOCAL LIVE] GLM-5.1 (Gateway)" : "[LOCAL OFFLINE] GLM-5.1 (Gateway)"
++    if (config.provider["glm-gateway"].models["glm-5.1"].name !== gatewayName) {
++      config.provider["glm-gateway"].models["glm-5.1"].name = gatewayName
++      changed = true
++    }
++  }
++
++  if (config.provider["glm-nvidia"]?.models?.["glm-5.1"]) {
++    if (config.provider["glm-nvidia"].models["glm-5.1"].name !== "[FREE GLM] GLM-5.1 (NVIDIA NIM)") {
++      config.provider["glm-nvidia"].models["glm-5.1"].name = "[FREE GLM] GLM-5.1 (NVIDIA NIM)"
++      changed = true
++    }
++  }
++
++  if (config.provider["glm-puter"]?.models?.["glm-5.1"]) {
++    if (config.provider["glm-puter"].models["glm-5.1"].name !== "[FREE GLM] GLM-5.1 (Puter)") {
++      config.provider["glm-puter"].models["glm-5.1"].name = "[FREE GLM] GLM-5.1 (Puter)"
++      changed = true
++    }
++  }
++
++  return changed
++}
++
++function getDisabledProviders(config) {
++  if (!Array.isArray(config?.disabled_providers)) return []
++  return config.disabled_providers.filter((value) => typeof value === "string")
++}
++
++function hasProviderModel(config, candidate) {
++  const provider = config?.provider?.[candidate.providerID]
++  if (!provider || typeof provider !== "object") return false
++  if (getDisabledProviders(config).includes(candidate.providerID)) return false
++  const models = provider.models
++  return Boolean(models && typeof models === "object" && models[candidate.modelID])
++}
++
++function dedupeModelRefs(entries) {
++  const seen = new Set()
++  const result = []
++  for (const entry of entries) {
++    const providerID = entry?.providerID
++    const modelID = entry?.modelID
++    if (!providerID || !modelID) continue
++    const key = `${providerID}/${modelID}`
++    if (seen.has(key)) continue
++    seen.add(key)
++    result.push({ providerID, modelID })
++  }
++  return result
++}
++
++function stripRemovedModelRefs(entries) {
++  if (!Array.isArray(entries)) return []
++  return entries.filter((entry) => !(entry?.providerID === "google" && REMOVED_GOOGLE_MODEL_IDS.has(entry?.modelID)))
++}
++
++function filterAvailableModelRefs(entries, config) {
++  if (!Array.isArray(entries)) return []
++  return entries.filter((entry) => hasProviderModel(config, entry))
++}
++
++function syncStableModelPreferences() {
++  try {
++    const config = readJsonFile(getOpencodeConfigPath(), {})
++    let configChanged = false
++
++    const currentDisabledProviders = getDisabledProviders(config)
++    const nextDisabledProviders = [...currentDisabledProviders]
++    const gatewayDisabled = nextDisabledProviders.includes(DYNAMIC_GATEWAY_PROVIDER_ID)
++    const gatewayReachable = isLocalGatewayReachable()
++    if (gatewayReachable && gatewayDisabled) {
++      const index = nextDisabledProviders.indexOf(DYNAMIC_GATEWAY_PROVIDER_ID)
++      nextDisabledProviders.splice(index, 1)
++    }
++    if (!gatewayReachable && !gatewayDisabled) {
++      nextDisabledProviders.push(DYNAMIC_GATEWAY_PROVIDER_ID)
++    }
++    if (JSON.stringify(currentDisabledProviders) !== JSON.stringify(nextDisabledProviders)) {
++      config.disabled_providers = nextDisabledProviders
++      configChanged = true
++    }
++
++    if (config.provider?.google && typeof config.provider.google === "object") {
++      const currentWhitelist = Array.isArray(config.provider.google.whitelist)
++        ? config.provider.google.whitelist.filter((value) => typeof value === "string")
++        : []
++      if (JSON.stringify(currentWhitelist) !== JSON.stringify(WORKING_GOOGLE_MODEL_IDS)) {
++        config.provider.google.whitelist = [...WORKING_GOOGLE_MODEL_IDS]
++        configChanged = true
++      }
++
++      const currentBlacklist = Array.isArray(config.provider.google.blacklist)
++        ? config.provider.google.blacklist.filter((value) => typeof value === "string")
++        : []
++      const nextBlacklist = [...REMOVED_GOOGLE_MODEL_IDS]
++      if (JSON.stringify(currentBlacklist) !== JSON.stringify(nextBlacklist)) {
++        config.provider.google.blacklist = nextBlacklist
++        configChanged = true
++      }
++    }
++
++    if (config.small_model !== SAFE_SMALL_MODEL) {
++      config.small_model = SAFE_SMALL_MODEL
++      configChanged = true
++    }
++
++    configChanged = ensureNonQuotaDisplayModels(config) || configChanged
++    if (configChanged) {
++      writeJsonFile(getOpencodeConfigPath(), config)
++    }
++
++    const state = getModelState()
++    const filteredRecent = filterAvailableModelRefs(stripRemovedModelRefs(state.recent), config)
++    const filteredFavorite = filterAvailableModelRefs(stripRemovedModelRefs(state.favorite), config)
++    let stateChanged = filteredRecent.length !== state.recent.length || filteredFavorite.length !== state.favorite.length
++
++    state.recent = filteredRecent
++    state.favorite = filteredFavorite
++
++    for (const [modelKey, variant] of Object.entries(DEFAULT_MODEL_VARIANTS)) {
++      if (state.variant[modelKey] === variant) continue
++      state.variant[modelKey] = variant
++      stateChanged = true
++    }
++
++    if (stateChanged) {
++      writeModelState(state)
++    }
++  } catch {
++    // Never block launch if the stable model preferences cannot be refreshed.
++  }
++}
++
++function getQuotaFavoriteEntries(account) {
++  if (!account?.enabled || account?.verificationRequired) {
++    return []
++  }
++
++  const now = Date.now()
++  return QUOTA_FAVORITE_CANDIDATES
++    .map((candidate) => {
++      const status = getQuotaCandidateStatus(account, candidate)
++      const resetAt = getQuotaCandidateResetAt(account, candidate, now)
++      const rank = status === "live"
++        ? 0
++        : status === "wait"
++          ? 1
++          : status === "dry"
++            ? 2
++            : 3
++      return {
++        providerID: candidate.providerID,
++        modelID: candidate.modelID,
++        status,
++        rank,
++        resetAt: resetAt ?? Number.MAX_SAFE_INTEGER,
++      }
++    })
++    .filter((entry) => entry.status === "live" || entry.status === "wait")
++    .sort((left, right) => {
++      if (left.rank !== right.rank) return left.rank - right.rank
++      if (left.rank === 1 && left.resetAt !== right.resetAt) return left.resetAt - right.resetAt
++      return 0
++    })
++}
++
++function getPreferredFavorites(account, config) {
++  const favorites = [
++    ...getQuotaFavoriteEntries(account).filter((candidate) => hasProviderModel(config, candidate)),
++    ...STATIC_FAVORITE_CANDIDATES.filter((candidate) => hasProviderModel(config, candidate)),
++  ]
++  return dedupeModelRefs(favorites.map(({ providerID, modelID }) => ({ providerID, modelID })))
++}
++
++function syncQuotaEligibleFavorites() {
++  try {
++    const auth = getAuthData()
++    const authEmail = getPrimaryAuthEmail(auth)
++    const matchedAccount = getAntigravityAccountByEmail(authEmail)?.account
++      ?? getActiveAntigravityAccountForFamily("gemini")?.account
++
++    if (!matchedAccount) return
++
++    const config = readJsonFile(getOpencodeConfigPath(), {})
++    const state = getModelState()
++    const favorites = getPreferredFavorites(matchedAccount, config)
++
++    if (JSON.stringify(state.favorite) === JSON.stringify(favorites)) {
++      return
++    }
++
++    state.favorite = favorites
++    writeModelState(state)
++  } catch {
++    // Never block launch if the favorites sync cannot run.
++  }
++}
++
++function syncQuotaDisplayNames() {
++  try {
++    const auth = getAuthData()
++    const authEmail = getPrimaryAuthEmail(auth)
++    const matchedAccount = getAntigravityAccountByEmail(authEmail)?.account
++      ?? getActiveAntigravityAccountForFamily("gemini")?.account
++
++    if (!matchedAccount) return
++
++    const config = readJsonFile(getOpencodeConfigPath(), {})
++    const models = config?.provider?.google?.models
++    if (!models || typeof models !== "object") return
++
++    let changed = ensureNonQuotaDisplayModels(config)
++    changed = ensureQuotaDisplayModels(models) || changed
++    for (const candidate of QUOTA_FAVORITE_CANDIDATES) {
++      const model = models[candidate.modelID]
++      if (!model || typeof model !== "object") continue
++
++      const baseName = QUOTA_DISPLAY_NAME_OVERRIDES[candidate.modelID]
++        || stripQuotaDisplayPrefix(model.name || candidate.modelID)
++      const nextName = `${getQuotaDisplayLabel(matchedAccount, candidate)} ${baseName}`
++      if (model.name === nextName) continue
++      model.name = nextName
++      changed = true
++    }
++
++    if (changed) {
++      writeJsonFile(getOpencodeConfigPath(), config)
++    }
++  } catch {
++    // Never block launch if the quota labels cannot be refreshed.
++  }
++}
++
++function refreshSmartModelState() {
++  syncStableModelPreferences()
++  syncQuotaDisplayNames()
++  syncQuotaEligibleFavorites()
++}
++
++function startLiveRefreshDaemon(args) {
++  if (!shouldStartLiveRefreshDaemon(args)) return
++  try {
++    const child = childProcess.spawn(process.execPath, [__filename, LIVE_REFRESH_ARG], {
++      detached: true,
++      stdio: "ignore",
++      windowsHide: true,
++      env: {
++        ...process.env,
++        [LIVE_REFRESH_ENV]: "1",
++      },
++    })
++    child.unref()
++  } catch {
++    // Never block launch if the background refresher cannot start.
++  }
++}
++
++function runLiveRefreshDaemon() {
++  const startedAt = Date.now()
++  const refresh = () => {
++    try {
++      refreshSmartModelState()
++    } catch {
++      // keep the daemon alive even if a single refresh fails
++    }
++    if (Date.now() - startedAt >= LIVE_REFRESH_MAX_MS) {
++      process.exit(0)
++    }
++  }
++
++  refresh()
++  setInterval(refresh, LIVE_REFRESH_INTERVAL_MS)
 +}
 +
 +function isSecretField(key) {
@@ -1541,6 +2101,48 @@ index a7674ce..04facd7 100644
 +  process.exit(0)
 +}
 +
++function reconcileLaunchAuthState(args) {
++  if (args.length > 0 && isAuthRoot(args[0])) return
++  if (args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-v")) return
++  try {
++    const auth = getAuthData()
++    const authEmail = getPrimaryAuthEmail(auth)
++    if (!authEmail) return
++
++    const googleCredential = getGoogleCredential(auth)
++    const matchedAccount = getAntigravityAccountByEmail(authEmail)
++    let wroteAuth = false
++
++    if (googleCredential && !googleCredential.projectId && matchedAccount?.account?.projectId) {
++      googleCredential.projectId = matchedAccount.account.projectId
++      wroteAuth = true
++    }
++
++    if (wroteAuth) {
++      writeAuthData(auth)
++    }
++
++    const activeGeminiEmail = getActiveAntigravityAccountEmail("gemini")
++    const activeClaudeEmail = getActiveAntigravityAccountEmail("claude")
++    if (activeGeminiEmail !== authEmail || activeClaudeEmail !== authEmail) {
++      const store = getAntigravityAccountsStore()
++      const index = store?.accounts?.findIndex((account) => account && account.email === authEmail)
++      if (store && typeof index === "number" && index >= 0) {
++        store.activeIndex = index
++        store.activeIndexByFamily.gemini = index
++        store.activeIndexByFamily.claude = index
++        if (store.accounts[index]) {
++          store.accounts[index].lastUsed = Date.now()
++        }
++        writeAntigravityAccountsStore(store)
++        console.error(`[auth] Synced Antigravity account families to ${authEmail} before launch.`)
++      }
++    }
++  } catch {
++    // ignore launch-time reconciliation failures
++  }
++}
++
 +function maybeWarnOnLaunch(args) {
 +  if (args.length > 0 && isAuthRoot(args[0])) return
 +  if (args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-v")) return
@@ -1554,6 +2156,13 @@ index a7674ce..04facd7 100644
 +  } catch {
 +    // ignore launch-time warnings on read failure
 +  }
++}
++
++function prepareLaunchState(args) {
++  reconcileLaunchAuthState(args)
++  refreshSmartModelState()
++  startLiveRefreshDaemon(args)
++  maybeWarnOnLaunch(args)
 +}
 +
 +function handleEnhancedAuthRoot(args) {
@@ -1699,30 +2308,73 @@ index a7674ce..04facd7 100644
 +  return false
 +}
 +
++function getRequestedModelArg(args) {
++  for (let index = 0; index < args.length; index += 1) {
++    const arg = args[index]
++    if ((arg === "-m" || arg === "--model") && typeof args[index + 1] === "string") {
++      return {
++        model: args[index + 1],
++        insertIndex: index + 2,
++      }
++    }
++    if (arg.startsWith("--model=")) {
++      return {
++        model: arg.slice("--model=".length),
++        insertIndex: index + 1,
++      }
++    }
++  }
++  return null
++}
++
++function hasVariantArg(args) {
++  return args.some((arg) => arg === "--variant" || arg.startsWith("--variant="))
++}
++
++function getLaunchArgs(args) {
++  const nextArgs = [...args]
++  const requestedModel = getRequestedModelArg(nextArgs)
++  if (!requestedModel || hasVariantArg(nextArgs)) {
++    return nextArgs
++  }
++
++  const defaultVariant = DEFAULT_MODEL_VARIANTS[requestedModel.model]
++  if (!defaultVariant) {
++    return nextArgs
++  }
++
++  nextArgs.splice(requestedModel.insertIndex, 0, "--variant", defaultVariant)
++  return nextArgs
++}
++
  function run(target) {
-   const result = childProcess.spawnSync(target, process.argv.slice(2), {
+-  const result = childProcess.spawnSync(target, process.argv.slice(2), {
++  const result = childProcess.spawnSync(target, getLaunchArgs(process.argv.slice(2)), {
      stdio: "inherit",
-@@ -19,15 +1712,18 @@ function run(target) {
- 
- const envPath = process.env.OPENCODE_BIN_PATH
- if (envPath) {
-+  handleCustomAuthCommands(process.argv.slice(2), envPath)
-+  maybeWarnOnLaunch(process.argv.slice(2))
-   run(envPath)
+   })
+   if (result.error) {
+@@ -17,20 +2358,6 @@ function run(target) {
+   process.exit(code)
  }
  
- const scriptPath = fs.realpathSync(__filename)
- const scriptDir = path.dirname(scriptPath)
- 
+-const envPath = process.env.OPENCODE_BIN_PATH
+-if (envPath) {
+-  run(envPath)
+-}
+-
+-const scriptPath = fs.realpathSync(__filename)
+-const scriptDir = path.dirname(scriptPath)
+-
 -//
- const cached = path.join(scriptDir, ".opencode")
- if (fs.existsSync(cached)) {
-+  handleCustomAuthCommands(process.argv.slice(2), cached)
-+  maybeWarnOnLaunch(process.argv.slice(2))
-   run(cached)
- }
- 
-@@ -43,13 +1739,9 @@ const archMap = {
+-const cached = path.join(scriptDir, ".opencode")
+-if (fs.existsSync(cached)) {
+-  run(cached)
+-}
+-
+ const platformMap = {
+   darwin: "darwin",
+   linux: "linux",
+@@ -43,13 +2370,9 @@ const archMap = {
  }
  
  let platform = platformMap[os.platform()]
@@ -1738,7 +2390,7 @@ index a7674ce..04facd7 100644
  const base = "opencode-" + platform + "-" + arch
  const binary = platform === "windows" ? "opencode.exe" : "opencode"
  
-@@ -78,9 +1770,7 @@ function supportsAvx2() {
+@@ -78,9 +2401,7 @@ function supportsAvx2() {
    }
  
    if (platform === "windows") {
@@ -1749,7 +2401,7 @@ index a7674ce..04facd7 100644
      for (const exe of ["powershell.exe", "pwsh.exe", "pwsh", "powershell"]) {
        try {
          const result = childProcess.spawnSync(exe, ["-NoProfile", "-NonInteractive", "-Command", cmd], {
-@@ -96,7 +1786,6 @@ function supportsAvx2() {
+@@ -96,7 +2417,6 @@ function supportsAvx2() {
          continue
        }
      }
@@ -1757,7 +2409,7 @@ index a7674ce..04facd7 100644
      return false
    }
  
-@@ -111,18 +1800,12 @@ const names = (() => {
+@@ -111,18 +2431,12 @@ const names = (() => {
      const musl = (() => {
        try {
          if (fs.existsSync("/etc/alpine-release")) return true
@@ -1778,7 +2430,7 @@ index a7674ce..04facd7 100644
        return false
      })()
  
-@@ -159,9 +1842,7 @@ function findBinary(startDir) {
+@@ -159,21 +2473,42 @@ function findBinary(startDir) {
        }
      }
      const parent = path.dirname(current)
@@ -1789,10 +2441,48 @@ index a7674ce..04facd7 100644
      current = parent
    }
  }
-@@ -176,4 +1857,6 @@ if (!resolved) {
-   process.exit(1)
- }
  
-+handleCustomAuthCommands(process.argv.slice(2), resolved)
-+maybeWarnOnLaunch(process.argv.slice(2))
- run(resolved)
+-const resolved = findBinary(scriptDir)
+-if (!resolved) {
+-  console.error(
+-    "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
+-      names.map((n) => `\"${n}\"`).join(" or ") +
+-      " package",
+-  )
+-  process.exit(1)
+-}
++if (isLiveRefreshDaemon()) {
++  runLiveRefreshDaemon()
++} else {
++  const envPath = process.env.OPENCODE_BIN_PATH
++  if (envPath) {
++    handleCustomAuthCommands(process.argv.slice(2), envPath)
++    prepareLaunchState(process.argv.slice(2))
++    run(envPath)
++  }
++
++  const scriptPath = fs.realpathSync(__filename)
++  const scriptDir = path.dirname(scriptPath)
++
++  const cached = path.join(scriptDir, ".opencode")
++  if (fs.existsSync(cached)) {
++    handleCustomAuthCommands(process.argv.slice(2), cached)
++    prepareLaunchState(process.argv.slice(2))
++    run(cached)
++  }
+
+-run(resolved)
++  const resolved = findBinary(scriptDir)
++  if (!resolved) {
++    console.error(
++      "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
++        names.map((n) => `\"${n}\"`).join(" or ") +
++        " package",
++    )
++    process.exit(1)
++  }
++
++  handleCustomAuthCommands(process.argv.slice(2), resolved)
++  prepareLaunchState(process.argv.slice(2))
++  run(resolved)
++}

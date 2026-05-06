@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 - 2026-05-06
+
+- refreshed the shipped `opencode-ai@1.14.31` launcher artifact to match the newer local patch
+- regenerated the published unified diff so the repo matches the actual launcher behavior
+- expanded the repo scope from auth-only hardening to auth plus model-picker hardening
+- documented quota-aware `READY` and cooldown-aware `WAIT` model labels
+- documented the interactive background refresh loop for picker state
+- documented GLM and free fallback routing plus local gateway offline awareness
+- documented the plugin runtime companion config alongside the unchanged upstream plugin package
+- added redacted examples for `antigravity.json` and smart model-picker output
+- updated the README and architecture docs to describe the full multi-store, multi-state flow
+
 ## 0.1.0 - 2026-05-05
 
 - documented the multi-store auth problem between `auth.json` and the Antigravity plugin store

@@ -1,0 +1,21 @@
+Select model
+
+Favorites
+
+• [READY 100%] Claude Sonnet 4.6 (Antigravity) Google
+  [READY 100%] Gemini 3.1 Pro (Antigravity) Google
+  [READY 100%] Gemini 3.1 Pro Google
+  [WAIT 20% 6d 19h] Gemini 3 Flash (Antigravity) Google
+  [WAIT 20% 6d 19h] Gemini 3 Flash Preview Google
+  [READY 20%] Gemini 2.5 Flash Google
+  [FREE GLM] GLM-5.1 (NVIDIA NIM)
+  [FREE GLM] GLM-5.1 (Puter)
+  [FREE FAST] GPT-5 Nano
+  [FREE FAST] MiniMax M2.5 Free
+
+Recent
+
+  [FREE GLM] GLM-5.1 (NVIDIA NIM)
+  [READY 100%] Gemini 3.1 Pro Google
+  [FREE FAST] MiniMax M2.5 Free
+  [READY 100%] Claude Sonnet 4.6 (Antigravity) Google

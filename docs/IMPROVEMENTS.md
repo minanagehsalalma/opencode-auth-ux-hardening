@@ -24,11 +24,11 @@ Use `opencode auth switch` or `opencode auth repair` to sync both stores.
 1. google
    type: oauth
    email: alpha@example.com
-   projectId: (empty)
+   projectId: example-project-123
    expires: 1777923377608 (2026-05-04T19:36:17.608Z, 2h 14m ago)
    access: ya29...0211 (258 chars)
    refresh: 1//0...Cp0| (104 chars)
-   antigravity: flash 80%, pro 20%, claude 0%, project example-project-123
+   antigravity: flash 20%, pro 100%, claude 100%, project example-project-123
 ```
 
 ## 2. Interactive `auth switch`
@@ -50,7 +50,7 @@ Select a profile to switch to:
 1. personal [profile-active, gemini-active]
    savedAt: 2026-05-05T12:08:09.884Z
    google: oauth, alpha@example.com, project example-project-123
-   antigravity: flash 80%, pro 20%, claude 0%, project example-project-123
+   antigravity: flash 20%, pro 100%, claude 100%, project example-project-123
 
 2. backup [no-antigravity]
    savedAt: 2026-05-05T12:08:31.905Z
@@ -80,12 +80,17 @@ Auth Current
 profile: personal
 auth.json: alpha@example.com
 antigravity gemini: alpha@example.com
-antigravity claude: beta@example.com
+antigravity claude: alpha@example.com
 saved profiles: 2
 running opencode processes: 1
 recent sessions: 5
 projectId: example-project-123
-quota: flash 80%, pro 20%, claude 0%
+quota: flash 20%, pro 100%, claude 100%
+
+drift:
+  [WARN] Access token expired 2h 14m ago, but a refresh token exists.
+
+note: live OpenCode sessions may need restart to pick up account changes.
 ```
 
 ## 4. `auth doctor`
@@ -110,7 +115,7 @@ Auth Doctor
 [OK] Gemini active account: alpha@example.com
 [OK] auth.json projectId: example-project-123
 [WARN] Access token expired 2h 14m ago
-[WARN] 1 running Opencode process
+[WARN] 1 running OpenCode process
 
 recommended:
   - Use `opencode auth switch --restart` after changing accounts.
@@ -210,7 +215,7 @@ Example:
 ```text
 Switched active credentials to profile: personal
 Synced Antigravity gemini active account to: alpha@example.com
-Restart requested: stopped 1 Opencode process and launched a fresh session.
+Restart requested: stopped 1 OpenCode process and launched a fresh session.
 ```
 
 ## 10. Launch-Time Warning
@@ -229,4 +234,125 @@ Example:
 ```text
 [auth] Warning: Antigravity Gemini is beta@example.com, auth.json is alpha@example.com.
 [auth] Run `opencode auth repair` or `opencode auth switch --restart` before starting a new session.
+```
+
+## 11. Smart Model Picker
+
+What for:
+Turn the picker into a state board instead of a static list.
+
+Behavior:
+
+- Google model labels are rewritten from quota buckets and cooldown timers.
+- Favorites are reordered toward the most useful live options.
+- Models that are temporarily waiting can still stay visible.
+
+Example:
+
+```text
+Favorites
+
+• [READY 100%] Claude Sonnet 4.6 (Antigravity) Google
+  [READY 100%] Gemini 3.1 Pro (Antigravity) Google
+  [READY 100%] Gemini 3.1 Pro Google
+  [WAIT 20% 6d 19h] Gemini 3 Flash (Antigravity) Google
+  [WAIT 20% 6d 19h] Gemini 3 Flash Preview Google
+  [READY 20%] Gemini 2.5 Flash Google
+  [FREE GLM] GLM-5.1 (NVIDIA NIM)
+  [FREE GLM] GLM-5.1 (Puter)
+  [FREE FAST] GPT-5 Nano
+```
+
+## 12. Cooldown-Aware Flash Surfacing
+
+What for:
+Keep flash models in the picker when the quota window has not reset yet.
+
+Why it matters:
+
+- these models used to work
+- they will work again after the reset
+- hiding them entirely makes the picker lie about future availability
+
+Example labels:
+
+```text
+[WAIT 20% 6d 19h] Gemini 3 Flash Preview
+[WAIT 20% 6d 19h] Gemini 3 Flash (Antigravity)
+[READY 20%] Gemini 2.5 Flash
+```
+
+## 13. Self-Updating Interactive Refresh
+
+What for:
+Avoid stale model-state labels during a long interactive session.
+
+Behavior:
+
+- interactive launches start a background refresh loop
+- the loop re-reads Antigravity quota and cooldown metadata every 60 seconds
+- the loop rewrites picker state for up to 6 hours
+
+Practical result:
+
+```text
+quota reset passes -> picker labels move from WAIT to READY without another manual patch
+```
+
+## 14. Fallback Routing
+
+What for:
+Keep the experience usable when a quota-backed provider is cooling down or slow.
+
+Behavior:
+
+- safe `small_model` is moved to a cheap fallback
+- GLM providers are kept close to the top
+- free fast models are labeled explicitly
+
+Example:
+
+```text
+small_model: opencode/gpt-5-nano
+fallbacks: glm-nvidia/glm-5.1, glm-puter/glm-5.1, opencode/minimax-m2.5-free
+```
+
+## 15. Local Gateway Offline Awareness
+
+What for:
+Stop presenting a dead local gateway as if it were a ready model.
+
+Example:
+
+```text
+[LOCAL OFFLINE] GLM-5.1 (Gateway)
+```
+
+When the gateway comes back, the same slot can be labeled live again.
+
+## 16. Plugin Runtime Companion
+
+What for:
+Make the plugin behave sanely with the launcher's smarter auth and picker logic.
+
+Companion config behaviors:
+
+- sticky account selection
+- short rate-limit waits
+- proactive token refresh
+- session recovery
+- tool ID recovery
+- Claude tool hardening
+
+Example:
+
+```json
+{
+  "account_selection_strategy": "sticky",
+  "switch_on_first_rate_limit": true,
+  "session_recovery": true,
+  "auto_update": true,
+  "max_rate_limit_wait_seconds": 15,
+  "proactive_token_refresh": true
+}
 ```

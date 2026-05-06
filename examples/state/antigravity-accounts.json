@@ -5,20 +5,26 @@
       "email": "alpha@example.com",
       "refreshToken": "1//0EXAMPLE_REFRESH_TOKEN",
       "enabled": true,
+      "rateLimitResetTimes": {
+        "claude": 1778174400000,
+        "gemini-antigravity:antigravity-gemini-3-flash": 1778678627701,
+        "gemini-antigravity:gemini-3-flash-preview": 1778678627698,
+        "gemini-cli:gemini-2.5-flash": 1778086794885
+      },
       "cachedQuota": {
         "gemini-flash": {
-          "remainingFraction": 0.8,
-          "resetTime": "2026-05-05T17:36:56Z",
-          "modelCount": 7
+          "remainingFraction": 0.2,
+          "resetTime": "2026-05-13T13:21:17Z",
+          "modelCount": 3
         },
         "gemini-pro": {
-          "remainingFraction": 0.2,
-          "resetTime": "2026-05-06T13:22:24Z",
+          "remainingFraction": 1.0,
+          "resetTime": "2026-05-06T23:02:56Z",
           "modelCount": 2
         },
         "claude": {
-          "remainingFraction": 0.0,
-          "resetTime": "2026-05-06T13:21:17Z",
+          "remainingFraction": 1.0,
+          "resetTime": "2026-05-13T13:21:17Z",
           "modelCount": 2
         }
       },
@@ -31,8 +37,8 @@
       "cachedQuota": {
         "gemini-flash": {
           "remainingFraction": 0.4,
-          "resetTime": "2026-05-05T18:10:00Z",
-          "modelCount": 7
+          "resetTime": "2026-05-07T18:10:00Z",
+          "modelCount": 3
         }
       },
       "projectId": "example-project-456"
@@ -41,6 +47,6 @@
   "activeIndex": 0,
   "activeIndexByFamily": {
     "gemini": 0,
-    "claude": 1
+    "claude": 0
   }
 }
